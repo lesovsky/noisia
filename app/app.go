@@ -57,6 +57,18 @@ func Start(ctx context.Context, c *Config) error {
 		}()
 	}
 
+	if c.TempFiles {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			err := runTempFilesWorkload(ctx, c)
+			if err != nil {
+				log.Errorf("temporary files workload failed: %s", err)
+			}
+		}()
+	}
+
 	wg.Wait()
 
 	return nil

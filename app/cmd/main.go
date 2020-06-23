@@ -30,6 +30,9 @@ func main() {
 		waitXactsLocktimeMin = kingpin.Flag("wait-xacts.locktime-min", "Min transactions locking time, in seconds").Default("5").Envar("NOISIA_WAIT_XACTS_LOCKTIME_MIN").Int()
 		waitXactsLocktimeMax = kingpin.Flag("wait-xacts.locktime-max", "Max transactions locking time, in seconds").Default("20").Envar("NOISIA_WAIT_XACTS_LOCKTIME_MAX").Int()
 		deadlocks            = kingpin.Flag("deadlocks", "Run deadlocks workload").Default("false").Envar("NOISIA_DEADLOCKS").Bool()
+		tempFiles            = kingpin.Flag("temp-files", "Run temp-files workload").Default("false").Envar("NOISIA_TEMP_FILES").Bool()
+		tempFilesRate        = kingpin.Flag("temp-files.rate", "Number of queries per second (per worker)").Default("10").Envar("NOISIA_TEMP_FILES_RATE").Int()
+		tempFilesScaleFactor = kingpin.Flag("temp-files.scale-factor", "Test data multiplier, 1 = 1000 rows").Default("10").Envar("NOISIA_TEMP_FILES_SCALE_FACTOR").Int()
 	)
 	kingpin.Parse()
 	log.SetLevel(*logLevel)
@@ -51,6 +54,9 @@ func main() {
 		WaitXactsLocktimeMin: *waitXactsLocktimeMin,
 		WaitXactsLocktimeMax: *waitXactsLocktimeMax,
 		Deadlocks:            *deadlocks,
+		TempFiles:            *tempFiles,
+		TempFilesRate:        *tempFilesRate,
+		TempFilesScaleFactor: *tempFilesScaleFactor,
 	}
 
 	if err := config.Validate(); err != nil {

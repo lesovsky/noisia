@@ -16,6 +16,9 @@ type Config struct {
 	WaitXactsLocktimeMin int
 	WaitXactsLocktimeMax int
 	Deadlocks            bool
+	TempFiles            bool
+	TempFilesRate        int
+	TempFilesScaleFactor int
 }
 
 func (c *Config) Validate() error {
