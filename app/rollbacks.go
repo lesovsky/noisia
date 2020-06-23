@@ -16,6 +16,9 @@ func runRollbacksWorkload(ctx context.Context, config *Config) error {
 	}
 	defer pool.Close()
 
+	// calculate inter-query interval for rate throttling
+	var interval = 1000000000 / int64(config.RollbacksRate)
+
 	// keep specified number of workers using channel - run new workers until there is any free slot
 	guard := make(chan struct{}, config.Jobs)
 	for {
@@ -24,7 +27,6 @@ func runRollbacksWorkload(ctx context.Context, config *Config) error {
 		case guard <- struct{}{}:
 			go func() {
 				log.Debugln("starting xact with rollback")
-				var interval = 1000000000 / int64(config.RollbacksRate)
 
 				err := startXactRollback(context.Background(), pool)
 				if err != nil {
