@@ -29,6 +29,7 @@ func main() {
 		waitXacts            = kingpin.Flag("wait-xacts", "Run idle transactions workload").Default("false").Envar("NOISIA_IDLE_XACTS").Bool()
 		waitXactsLocktimeMin = kingpin.Flag("wait-xacts.locktime-min", "Min transactions locking time, in seconds").Default("5").Envar("NOISIA_WAIT_XACTS_LOCKTIME_MIN").Int()
 		waitXactsLocktimeMax = kingpin.Flag("wait-xacts.locktime-max", "Max transactions locking time, in seconds").Default("20").Envar("NOISIA_WAIT_XACTS_LOCKTIME_MAX").Int()
+		deadlocks            = kingpin.Flag("deadlocks", "Run deadlocks workload").Default("false").Envar("NOISIA_DEADLOCKS").Bool()
 	)
 	kingpin.Parse()
 	log.SetLevel(*logLevel)
@@ -49,6 +50,7 @@ func main() {
 		WaitXacts:            *waitXacts,
 		WaitXactsLocktimeMin: *waitXactsLocktimeMin,
 		WaitXactsLocktimeMax: *waitXactsLocktimeMax,
+		Deadlocks:            *deadlocks,
 	}
 
 	if err := config.Validate(); err != nil {

@@ -15,6 +15,7 @@ type Config struct {
 	WaitXacts            bool
 	WaitXactsLocktimeMin int
 	WaitXactsLocktimeMax int
+	Deadlocks            bool
 }
 
 func (c *Config) Validate() error {
@@ -30,7 +31,7 @@ func (c *Config) Validate() error {
 		return errors.New("wrong 'wait-xact.locktime-min' or 'wait-xact.locktime-max' specified")
 	}
 
-	if c.WaitXacts && c.Jobs < 2 {
+	if (c.WaitXacts || c.Deadlocks) && c.Jobs < 2 {
 		return errors.New("insufficient 'jobs' for this workload")
 	}
 

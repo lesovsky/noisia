@@ -45,6 +45,18 @@ func Start(ctx context.Context, c *Config) error {
 		}()
 	}
 
+	if c.Deadlocks {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			err := runDeadlocksWorkload(ctx, c)
+			if err != nil {
+				log.Errorf("deadlocks workload failed: %s", err)
+			}
+		}()
+	}
+
 	wg.Wait()
 
 	return nil

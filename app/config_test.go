@@ -19,6 +19,7 @@ func TestConfig_Validate(t *testing.T) {
 		{config: Config{PostgresConninfo: "127.0.0.1", WaitXacts: true, WaitXactsLocktimeMin: 10, WaitXactsLocktimeMax: 5}, valid: false},
 		{config: Config{PostgresConninfo: "127.0.0.1", WaitXacts: true, WaitXactsLocktimeMin: 10, WaitXactsLocktimeMax: 5}, valid: false},
 		{config: Config{PostgresConninfo: "127.0.0.1", WaitXacts: true, Jobs: 1, WaitXactsLocktimeMin: 10, WaitXactsLocktimeMax: 20}, valid: false},
+		{config: Config{PostgresConninfo: "127.0.0.1", Deadlocks: true, Jobs: 1, WaitXactsLocktimeMin: 10, WaitXactsLocktimeMax: 20}, valid: false},
 	}
 	for _, tc := range testcases {
 		if tc.valid {
