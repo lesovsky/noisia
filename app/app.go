@@ -2,11 +2,17 @@ package app
 
 import (
 	"context"
+	"fmt"
+	"github.com/jackc/pgx/v4"
 	"github.com/lesovsky/noisia/app/internal/log"
 	"sync"
 )
 
 func Start(ctx context.Context, c *Config) error {
+	if c.DoCleanup {
+		return runCleanup(c.PostgresConninfo)
+	}
+
 	var wg sync.WaitGroup
 
 	if c.IdleXacts {
@@ -71,5 +77,22 @@ func Start(ctx context.Context, c *Config) error {
 
 	wg.Wait()
 
+	return nil
+}
+
+func runCleanup(dsn string) error {
+	conn, err := pgx.Connect(context.Background(), dsn)
+	if err != nil {
+		return err
+	}
+
+	var tables = []string{"noisia_deadlocks_workload", "noisia_wait_xact_workload", "noisia_temp_files_workload"}
+	for _, t := range tables {
+		log.Infof("cleanup: drop table %s", t)
+		_, err := conn.Exec(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s", t))
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }

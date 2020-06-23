@@ -5,6 +5,7 @@ import (
 )
 
 type Config struct {
+	DoCleanup            bool
 	PostgresConninfo     string
 	Jobs                 uint16 // max 65535
 	IdleXacts            bool
