@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func runIdleXactWorkload(ctx context.Context, config *Config) error {
+func runIdleXactsWorkload(ctx context.Context, config *Config) error {
 	log.Infoln("Starting idle transactions workload")
 
 	pool, err := pgxpool.Connect(context.Background(), config.PostgresConninfo)
@@ -24,7 +24,7 @@ func runIdleXactWorkload(ctx context.Context, config *Config) error {
 		// run workers only when it's possible to write into channel (channel is limited by number of jobs)
 		case guard <- struct{}{}:
 			go func() {
-				naptime := time.Duration(rand.Intn(config.IdleXactNaptimeMax-config.IdleXactNaptimeMin)+config.IdleXactNaptimeMin) * time.Second
+				naptime := time.Duration(rand.Intn(config.IdleXactsNaptimeMax-config.IdleXactsNaptimeMin)+config.IdleXactsNaptimeMin) * time.Second
 
 				log.Debugln("starting xact with naptime %s", naptime)
 				err := startSingleIdleXact(context.Background(), pool, naptime)

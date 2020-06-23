@@ -5,13 +5,13 @@ import (
 )
 
 type Config struct {
-	PostgresConninfo   string
-	Jobs               uint16 // max 65535
-	IdleXact           bool
-	IdleXactNaptimeMin int
-	IdleXactNaptimeMax int
-	Rollbacks          bool
-	RollbacksRate      int
+	PostgresConninfo    string
+	Jobs                uint16 // max 65535
+	IdleXacts           bool
+	IdleXactsNaptimeMin int
+	IdleXactsNaptimeMax int
+	Rollbacks           bool
+	RollbacksRate       int
 }
 
 func (c *Config) Validate() error {
@@ -19,7 +19,7 @@ func (c *Config) Validate() error {
 		return errors.New("'conninfo' is not specified")
 	}
 
-	if c.IdleXactNaptimeMin < 1 || c.IdleXactNaptimeMin > c.IdleXactNaptimeMax {
+	if c.IdleXactsNaptimeMin < 1 || c.IdleXactsNaptimeMin > c.IdleXactsNaptimeMax {
 		return errors.New("wrong 'idle-xact.naptime-min' or 'idle-xact.naptime-max' specified")
 	}
 
