@@ -10,6 +10,8 @@ type Config struct {
 	IdleXact           bool
 	IdleXactNaptimeMin int
 	IdleXactNaptimeMax int
+	Rollbacks          bool
+	RollbacksRate      int
 }
 
 func (c *Config) Validate() error {

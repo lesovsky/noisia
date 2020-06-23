@@ -4,12 +4,11 @@ import (
 	"context"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/lesovsky/noisia/app/internal/log"
-	"math/rand"
 	"time"
 )
 
-func runIdleXactWorkload(ctx context.Context, config *Config) error {
-	log.Infoln("Starting idle transactions workload")
+func runRollbacksWorkload(ctx context.Context, config *Config) error {
+	log.Infoln("Starting rollbacks workload")
 
 	pool, err := pgxpool.Connect(context.Background(), config.PostgresConninfo)
 	if err != nil {
@@ -24,38 +23,37 @@ func runIdleXactWorkload(ctx context.Context, config *Config) error {
 		// run workers only when it's possible to write into channel (channel is limited by number of jobs)
 		case guard <- struct{}{}:
 			go func() {
-				naptime := time.Duration(rand.Intn(config.IdleXactNaptimeMax-config.IdleXactNaptimeMin)+config.IdleXactNaptimeMin) * time.Second
+				log.Debugln("starting xact with rollback")
+				var interval = 1000000000 / int64(config.RollbacksRate)
 
-				log.Debugln("starting xact with naptime %s", naptime)
-				err := startSingleIdleXact(context.Background(), pool, naptime)
+				err := startXactRollback(context.Background(), pool)
 				if err != nil {
 					log.Errorln(err)
 				}
+				time.Sleep(time.Duration(interval) * time.Nanosecond)
 
-				// when worker finished, read from the channel to allow starting another workers
 				<-guard
 			}()
 		case <-ctx.Done():
-			log.Info("exit signaled, stop idle transaction workload")
+			log.Info("exit signaled, stop rollbacks workload")
 			return nil
 		}
 	}
 }
 
-func startSingleIdleXact(ctx context.Context, pool *pgxpool.Pool, naptime time.Duration) error {
+func startXactRollback(ctx context.Context, pool *pgxpool.Pool) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 
-	rows, err := tx.Query(ctx, "SELECT * FROM pg_stat_database")
+	rows, err := tx.Query(ctx, "SELECT * FROM pg_stat_replication")
 	if err != nil {
 		return err
 	}
 	rows.Close()
-	time.Sleep(naptime)
 
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Rollback(ctx); err != nil {
 		log.Warnln(err)
 	}
 	return nil
