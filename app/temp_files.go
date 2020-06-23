@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	queryCreateTable = `CREATE TABLE noisia_temp_files_workload (a text, b text, c text, d text, e text, f text, g text, h text, i text, j text, k text, l text, m text, n text, o text, p text, q text, r text, s text, t text, u text, v text, w text, x text, y text, z text)`
+	queryCreateTable = `CREATE TABLE IF NOT EXISTS noisia_temp_files_workload (a text, b text, c text, d text, e text, f text, g text, h text, i text, j text, k text, l text, m text, n text, o text, p text, q text, r text, s text, t text, u text, v text, w text, x text, y text, z text)`
 	queryLoadData    = `INSERT INTO noisia_temp_files_workload (a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z) SELECT random()::text,random()::text,
 random()::text,random()::text,random()::text,random()::text,random()::text,random()::text,random()::text,random()::text,random()::text,
 random()::text,random()::text,random()::text,random()::text,random()::text,random()::text,random()::text,random()::text,random()::text,
@@ -17,7 +17,7 @@ random()::text,random()::text,random()::text,random()::text,random()::text,rando
 )
 
 func runTempFilesWorkload(ctx context.Context, config *Config) error {
-	log.Infoln("Starting temporray files workload")
+	log.Infoln("Starting temporary files workload")
 
 	pool, err := pgxpool.Connect(context.Background(), config.PostgresConninfo)
 	if err != nil {
@@ -53,7 +53,7 @@ func runTempFilesWorkload(ctx context.Context, config *Config) error {
 		case <-ctx.Done():
 			log.Info("exit signaled, stop temp files workload")
 			// TODO: cleanup is not working - workload table still exists in the database (no suspicious logs)
-			return cleanupTempFilesWorkload(ctx, pool)
+			return cleanupTempFilesWorkload(context.Background(), pool)
 		}
 	}
 }

@@ -43,7 +43,7 @@ func runWaitXactsWorkload(ctx context.Context, config *Config) error {
 			}()
 		case <-ctx.Done():
 			log.Info("exit signaled, stop waiting transaction workload")
-			return cleanupWaitXactWorkload(ctx, pool)
+			return cleanupWaitXactWorkload(context.Background(), pool)
 		}
 	}
 }

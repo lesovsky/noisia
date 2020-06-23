@@ -43,7 +43,7 @@ func runDeadlocksWorkload(ctx context.Context, config *Config) error {
 		case <-ctx.Done():
 			log.Info("exit signaled, stop waiting transaction workload")
 			// TODO: cleanup is not working - workload table still exists in the database (no suspicious logs)
-			return cleanupDeadlocksWorkload(ctx, pool)
+			return cleanupDeadlocksWorkload(context.Background(), pool)
 		}
 	}
 }
