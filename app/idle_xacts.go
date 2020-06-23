@@ -26,7 +26,7 @@ func runIdleXactsWorkload(ctx context.Context, config *Config) error {
 			go func() {
 				naptime := time.Duration(rand.Intn(config.IdleXactsNaptimeMax-config.IdleXactsNaptimeMin)+config.IdleXactsNaptimeMin) * time.Second
 
-				log.Debugln("starting xact with naptime %s", naptime)
+				log.Debugf("starting xact with naptime %s", naptime)
 				err := startSingleIdleXact(context.Background(), pool, naptime)
 				if err != nil {
 					log.Errorln(err)

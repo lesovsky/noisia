@@ -33,6 +33,18 @@ func Start(ctx context.Context, c *Config) error {
 		}()
 	}
 
+	if c.WaitXacts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			err := runWaitXactsWorkload(ctx, c)
+			if err != nil {
+				log.Errorf("wait xacts workload failed: %s", err)
+			}
+		}()
+	}
+
 	wg.Wait()
 
 	return nil
