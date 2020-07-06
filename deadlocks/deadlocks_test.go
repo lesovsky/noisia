@@ -1,22 +1,25 @@
-package app
+package deadlocks
 
 import (
 	"context"
+	"github.com/lesovsky/noisia"
 	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"
 )
 
-func Test_runDeadlocksWorkload(t *testing.T) {
+func TestWorkload_Run(t *testing.T) {
 	config := &Config{
 		PostgresConninfo: "host=127.0.0.1",
 		Jobs:             2,
-		Deadlocks:        true,
 	}
-	assert.NoError(t, config.Validate())
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	err := runDeadlocksWorkload(ctx, config)
+	w := NewWorkload(config)
+	err := w.Run(ctx)
 	assert.NoError(t, err)
+
+	assert.NoError(t, noisia.Cleanup(context.Background(), config.PostgresConninfo))
 }

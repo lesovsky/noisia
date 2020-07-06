@@ -4,7 +4,7 @@
 
 ---
 
-Supported workloads:
+#### Supported workloads:
 - `idle transactions` - transactions that do nothing during its lifetime.
 
 - `rollbacks` - transactions performed some work but rolled back in the end.
@@ -17,7 +17,36 @@ Supported workloads:
 
 - ...see built-in help for more runtime options.
 
+#### Using in your own code
+You can import `noisia` and use necessary workloads in your code. Always use contexts to avoid infinite run. See tiny example below:
+```
+import (
+  "context"
+  "fmt"
+  "github.com/lesovsky/noisia/waitxacts"
+  "time"
+)
+
+func main() {
+  config := &waitxacts.Config{
+    PostgresConninfo:    "host=127.0.0.1",
+    Jobs:                 2,
+  }
+
+  ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+  defer cancel()
+
+  w := waitxacts.NewWorkload(config)
+  if err := w.Run(ctx); err != nil {
+    fmt.Println(err)
+  }
+}
+```
+
+#### TODO/Ideas:
+- sequential scans
+
 ---
-**ATTENTION: Use only for testing purposes, don't execute against production, reckless usage will cause problems.**
+**ATTENTION: USE ONLY FOR TESTING PURPOSES, DO NOT EXECUTE NOISIA AGAINST PRODUCTION, RECKLESS USAGE WILL CAUSE PROBLEMS.**
 
 **DISCLAIMER: THIS SOFTWARE PROVIDED AS-IS WITH NO CARES AND GUARANTEES RELATED TO YOU DATABASES. USE AT YOUR OWN RISK.**

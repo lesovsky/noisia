@@ -1,23 +1,26 @@
-package app
+package rollbacks
 
 import (
 	"context"
+	"github.com/lesovsky/noisia"
 	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"
 )
 
-func Test_runRollbacksWorkload(t *testing.T) {
+func TestWorkload_Run(t *testing.T) {
 	config := &Config{
 		PostgresConninfo: "host=127.0.0.1",
 		Jobs:             2,
-		Rollbacks:        true,
 		RollbacksRate:    2,
 	}
-	assert.NoError(t, config.Validate())
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	err := runRollbacksWorkload(ctx, config)
+	w := NewWorkload(config)
+	err := w.Run(ctx)
 	assert.Nil(t, err)
+
+	assert.NoError(t, noisia.Cleanup(context.Background(), config.PostgresConninfo))
 }

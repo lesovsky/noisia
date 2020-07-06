@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/lesovsky/noisia/app"
-	"github.com/lesovsky/noisia/app/internal/log"
+	"github.com/rs/zerolog"
 	"gopkg.in/alecthomas/kingpin.v2"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 var (
@@ -18,7 +18,6 @@ var (
 func main() {
 	var (
 		showVersion          = kingpin.Flag("version", "show version and exit").Default().Bool()
-		logLevel             = kingpin.Flag("log-level", "set log level: debug, info, warn, error").Default("info").Envar("NOISIA_LOG_LEVEL").String()
 		doCleanup            = kingpin.Flag("cleanup", "do cleanup of workloads related tables from database").Default("false").Envar("NOISIA_CLEANUP").Bool()
 		postgresConninfo     = kingpin.Flag("conninfo", "Postgres connection string (DSN or URL), must be specified explicitly").Default("").Envar("NOISIA_POSTGRES_CONNINFO").String()
 		jobs                 = kingpin.Flag("jobs", "Run workload with specified number of workers").Default("1").Envar("NOISIA_JOBS").Uint16()
@@ -36,34 +35,31 @@ func main() {
 		tempFilesScaleFactor = kingpin.Flag("temp-files.scale-factor", "Test data multiplier, 1 = 1000 rows").Default("10").Envar("NOISIA_TEMP_FILES_SCALE_FACTOR").Int()
 	)
 	kingpin.Parse()
-	log.SetLevel(*logLevel)
+
+	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}).Level(zerolog.InfoLevel).With().Timestamp().Logger()
 
 	if *showVersion {
 		fmt.Printf("%s %s-%s\n", appName, gitCommit, gitBranch)
 		os.Exit(0)
 	}
 
-	config := &app.Config{
-		DoCleanup:            *doCleanup,
-		PostgresConninfo:     *postgresConninfo,
-		Jobs:                 *jobs,
-		IdleXacts:            *idleXacts,
-		IdleXactsNaptimeMin:  *idleXactsNaptimeMin,
-		IdleXactsNaptimeMax:  *idleXactsNaptimeMax,
-		Rollbacks:            *rollbacks,
-		RollbacksRate:        *rollbacksRate,
-		WaitXacts:            *waitXacts,
-		WaitXactsLocktimeMin: *waitXactsLocktimeMin,
-		WaitXactsLocktimeMax: *waitXactsLocktimeMax,
-		Deadlocks:            *deadlocks,
-		TempFiles:            *tempFiles,
-		TempFilesRate:        *tempFilesRate,
-		TempFilesScaleFactor: *tempFilesScaleFactor,
-	}
-
-	if err := config.Validate(); err != nil {
-		log.Errorln(err)
-		os.Exit(1)
+	config := &config{
+		logger:               logger,
+		doCleanup:            *doCleanup,
+		postgresConninfo:     *postgresConninfo,
+		jobs:                 *jobs,
+		idleXacts:            *idleXacts,
+		idleXactsNaptimeMin:  *idleXactsNaptimeMin,
+		idleXactsNaptimeMax:  *idleXactsNaptimeMax,
+		rollbacks:            *rollbacks,
+		rollbacksRate:        *rollbacksRate,
+		waitXacts:            *waitXacts,
+		waitXactsLocktimeMin: *waitXactsLocktimeMin,
+		waitXactsLocktimeMax: *waitXactsLocktimeMax,
+		deadlocks:            *deadlocks,
+		tempFiles:            *tempFiles,
+		tempFilesRate:        *tempFilesRate,
+		tempFilesScaleFactor: *tempFilesScaleFactor,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -75,11 +71,11 @@ func main() {
 	}()
 
 	go func() {
-		doExit <- app.Start(ctx, config)
+		doExit <- runApplication(ctx, config, logger)
 		cancel()
 	}()
 
-	log.Warnf("shutdown: %s", <-doExit)
+	logger.Info().Msgf("shutdown: %s", <-doExit)
 }
 
 func listenSignals() error {
