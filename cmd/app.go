@@ -8,28 +8,34 @@ import (
 	"github.com/lesovsky/noisia/idlexacts"
 	"github.com/lesovsky/noisia/rollbacks"
 	"github.com/lesovsky/noisia/tempfiles"
+	"github.com/lesovsky/noisia/terminate"
 	"github.com/lesovsky/noisia/waitxacts"
 	"github.com/rs/zerolog"
 	"sync"
 )
 
 type config struct {
-	logger               zerolog.Logger
-	doCleanup            bool
-	postgresConninfo     string
-	jobs                 uint16 // max 65535
-	idleXacts            bool
-	idleXactsNaptimeMin  int
-	idleXactsNaptimeMax  int
-	rollbacks            bool
-	rollbacksRate        int
-	waitXacts            bool
-	waitXactsLocktimeMin int
-	waitXactsLocktimeMax int
-	deadlocks            bool
-	tempFiles            bool
-	tempFilesRate        int
-	tempFilesScaleFactor int
+	logger                zerolog.Logger
+	doCleanup             bool
+	postgresConninfo      string
+	jobs                  uint16 // max 65535
+	idleXacts             bool
+	idleXactsNaptimeMin   int
+	idleXactsNaptimeMax   int
+	rollbacks             bool
+	rollbacksRate         int
+	waitXacts             bool
+	waitXactsLocktimeMin  int
+	waitXactsLocktimeMax  int
+	deadlocks             bool
+	tempFiles             bool
+	tempFilesRate         int
+	tempFilesScaleFactor  int
+	terminate             bool
+	terminateInterval     int
+	terminateRate         int
+	terminateSoftMode     bool
+	terminateIgnoreSystem bool
 }
 
 func runApplication(ctx context.Context, c *config, log zerolog.Logger) error {
@@ -69,6 +75,12 @@ func runApplication(ctx context.Context, c *config, log zerolog.Logger) error {
 		log.Info().Msg("start temp files workload")
 		wg.Add(1)
 		go startTempFilesWorkload(ctx, &wg, c)
+	}
+
+	if c.terminate {
+		log.Info().Msg("start terminate backends workload")
+		wg.Add(1)
+		go startTerminateWorkload(ctx, &wg, c)
 	}
 
 	wg.Wait()
@@ -150,5 +162,22 @@ func startTempFilesWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 	err := workload.Run(ctx)
 	if err != nil {
 		fmt.Printf("temp files workload failed: %s", err)
+	}
+}
+
+func startTerminateWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) {
+	defer wg.Done()
+
+	workload := terminate.NewWorkload(&terminate.Config{
+		PostgresConninfo:     c.postgresConninfo,
+		TerminateInterval:    c.tempFilesRate,
+		TerminateRate:        c.tempFilesScaleFactor,
+		SoftMode:             c.terminateSoftMode,
+		IgnoreSystemBackends: c.terminateIgnoreSystem,
+	})
+
+	err := workload.Run(ctx)
+	if err != nil {
+		fmt.Printf("terminate backends workload failed: %s", err)
 	}
 }

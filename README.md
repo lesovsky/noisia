@@ -6,15 +6,11 @@
 
 #### Supported workloads:
 - `idle transactions` - transactions that do nothing during its lifetime.
-
 - `rollbacks` - transactions performed some work but rolled back in the end.
-
 - `waiting transactions` - transaction locked by other transactions and thus waiting.
-
 - `deadlocks` - simultaneous transactions where each hold locks that the other transactions wants.
-
 - `temporary files` - queries that produce on-disk temporary files due to lack of `work_mem`.
-
+- `terminate backends` - terminate random backends (or queries) using `pg_terminate_backend()`, `pg_cancel_backend()`.
 - ...see built-in help for more runtime options.
 
 #### Using in your own code
