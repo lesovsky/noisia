@@ -1,3 +1,4 @@
 bin/*
 tmp/*
 .idea/*
+.test_coverage.txt
