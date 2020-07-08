@@ -11,6 +11,7 @@
 - `deadlocks` - simultaneous transactions where each hold locks that the other transactions wants.
 - `temporary files` - queries that produce on-disk temporary files due to lack of `work_mem`.
 - `terminate backends` - terminate random backends (or queries) using `pg_terminate_backend()`, `pg_cancel_backend()`.
+- `failed connections` - exhaust connections pool (other clients can't connect to Postgres) 
 - ...see built-in help for more runtime options.
 
 #### Using in your own code
