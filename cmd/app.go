@@ -13,6 +13,7 @@ import (
 	"github.com/lesovsky/noisia/waitxacts"
 	"github.com/rs/zerolog"
 	"sync"
+	"time"
 )
 
 type config struct {
@@ -20,6 +21,7 @@ type config struct {
 	doCleanup             bool
 	postgresConninfo      string
 	jobs                  uint16 // max 65535
+	duration              int
 	idleXacts             bool
 	idleXactsNaptimeMin   int
 	idleXactsNaptimeMax   int
@@ -41,11 +43,14 @@ type config struct {
 }
 
 func runApplication(ctx context.Context, c *config, log zerolog.Logger) error {
-
 	if c.doCleanup {
 		log.Info().Msg("do cleanup")
 		return noisia.Cleanup(ctx, c.postgresConninfo)
 	}
+
+	timeout := time.Duration(c.duration) * time.Second
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	var wg sync.WaitGroup
 
