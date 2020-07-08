@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/lesovsky/noisia"
 	"github.com/lesovsky/noisia/deadlocks"
+	"github.com/lesovsky/noisia/failconns"
 	"github.com/lesovsky/noisia/idlexacts"
 	"github.com/lesovsky/noisia/rollbacks"
 	"github.com/lesovsky/noisia/tempfiles"
@@ -36,6 +37,7 @@ type config struct {
 	terminateRate         int
 	terminateSoftMode     bool
 	terminateIgnoreSystem bool
+	failconns             bool
 }
 
 func runApplication(ctx context.Context, c *config, log zerolog.Logger) error {
@@ -81,6 +83,12 @@ func runApplication(ctx context.Context, c *config, log zerolog.Logger) error {
 		log.Info().Msg("start terminate backends workload")
 		wg.Add(1)
 		go startTerminateWorkload(ctx, &wg, c)
+	}
+
+	if c.failconns {
+		log.Info().Msg("start failconns backends workload")
+		wg.Add(1)
+		go startFailconnsWorkload(ctx, &wg, c)
 	}
 
 	wg.Wait()
@@ -179,5 +187,18 @@ func startTerminateWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 	err := workload.Run(ctx)
 	if err != nil {
 		fmt.Printf("terminate backends workload failed: %s", err)
+	}
+}
+
+func startFailconnsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) {
+	defer wg.Done()
+
+	workload := failconns.NewWorkload(&failconns.Config{
+		PostgresConninfo: c.postgresConninfo,
+	})
+
+	err := workload.Run(ctx)
+	if err != nil {
+		fmt.Printf("failconns workload failed: %s", err)
 	}
 }
