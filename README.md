@@ -14,6 +14,9 @@
 - `failed connections` - exhaust connections pool (other clients can't connect to Postgres) 
 - ...see built-in help for more runtime options.
 
+#### Usage
+Install `golang`, clone the repo and run `make build`. Check `bin/` directory for `noisia` executable. 
+
 #### Using in your own code
 You can import `noisia` and use necessary workloads in your code. Always use contexts to avoid infinite run. See tiny example below:
 ```
@@ -43,7 +46,12 @@ func main() {
 #### TODO/Ideas:
 - sequential scans
 
----
-**ATTENTION: USE ONLY FOR TESTING PURPOSES, DO NOT EXECUTE NOISIA AGAINST PRODUCTION, RECKLESS USAGE WILL CAUSE PROBLEMS.**
+#### Disclaimer
 
-**DISCLAIMER: THIS SOFTWARE PROVIDED AS-IS WITH NO CARES AND GUARANTEES RELATED TO YOU DATABASES. USE AT YOUR OWN RISK.**
+ATTENTION: USE ONLY FOR TESTING PURPOSES, DO NOT EXECUTE NOISIA AGAINST PRODUCTION, RECKLESS USAGE WILL CAUSE PROBLEMS.
+
+DISCLAIMER: THIS SOFTWARE PROVIDED AS-IS WITH NO CARES AND GUARANTEES RELATED TO YOU DATABASES. USE AT YOUR OWN RISK.
+
+
+#### License
+MIT. See [LICENSE](LICENSE) for more details.
