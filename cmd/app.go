@@ -26,7 +26,8 @@ type config struct {
 	idleXactsNaptimeMin   int
 	idleXactsNaptimeMax   int
 	rollbacks             bool
-	rollbacksRate         int
+	rollbacksMinRate      int
+	rollbacksMaxRate      int
 	waitXacts             bool
 	waitXactsLocktimeMin  int
 	waitXactsLocktimeMax  int
@@ -123,7 +124,8 @@ func startRollbacksWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 	workload := rollbacks.NewWorkload(&rollbacks.Config{
 		PostgresConninfo: c.postgresConninfo,
 		Jobs:             c.jobs,
-		RollbacksRate:    c.rollbacksRate,
+		MinRate:          c.rollbacksMinRate,
+		MaxRate:          c.rollbacksMaxRate,
 	})
 
 	err := workload.Run(ctx)

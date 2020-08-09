@@ -26,7 +26,8 @@ func main() {
 		idleXactsNaptimeMin   = kingpin.Flag("idle-xacts.naptime-min", "Min transactions naptime, in seconds").Default("5").Envar("NOISIA_IDLE_XACTS_NAPTIME_MIN").Int()
 		idleXactsNaptimeMax   = kingpin.Flag("idle-xacts.naptime-max", "Max transactions naptime, in seconds").Default("20").Envar("NOISIA_IDLE_XACTS_NAPTIME_MAX").Int()
 		rollbacks             = kingpin.Flag("rollbacks", "Run rollbacks workload").Default("false").Envar("NOISIA_ROLLBACKS").Bool()
-		rollbacksRate         = kingpin.Flag("rollbacks.rate", "Number of transactions per second (per worker)").Default("10").Envar("NOISIA_ROLLBACKS_RATE").Int()
+		rollbacksMinRate      = kingpin.Flag("rollbacks.min-rate", "Approximate minimum number of rollbacks per second (per worker)").Default("10").Envar("NOISIA_ROLLBACKS_MIN_RATE").Int()
+		rollbacksMaxRate      = kingpin.Flag("rollbacks.max-rate", "Approximate maximum number of rollbacks per second (per worker)").Default("10").Envar("NOISIA_ROLLBACKS_MAX_RATE").Int()
 		waitXacts             = kingpin.Flag("wait-xacts", "Run idle transactions workload").Default("false").Envar("NOISIA_IDLE_XACTS").Bool()
 		waitXactsLocktimeMin  = kingpin.Flag("wait-xacts.locktime-min", "Min transactions locking time, in seconds").Default("5").Envar("NOISIA_WAIT_XACTS_LOCKTIME_MIN").Int()
 		waitXactsLocktimeMax  = kingpin.Flag("wait-xacts.locktime-max", "Max transactions locking time, in seconds").Default("20").Envar("NOISIA_WAIT_XACTS_LOCKTIME_MAX").Int()
@@ -60,7 +61,8 @@ func main() {
 		idleXactsNaptimeMin:   *idleXactsNaptimeMin,
 		idleXactsNaptimeMax:   *idleXactsNaptimeMax,
 		rollbacks:             *rollbacks,
-		rollbacksRate:         *rollbacksRate,
+		rollbacksMinRate:      *rollbacksMinRate,
+		rollbacksMaxRate:      *rollbacksMaxRate,
 		waitXacts:             *waitXacts,
 		waitXactsLocktimeMin:  *waitXactsLocktimeMin,
 		waitXactsLocktimeMax:  *waitXactsLocktimeMax,

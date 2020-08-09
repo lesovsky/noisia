@@ -4,12 +4,13 @@ import (
 	"context"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/lesovsky/noisia"
+	"math/rand"
 	"time"
 )
 
 const (
-	// defaultRollbacksRate defines default rate of produced rollbacks per second.
-	defaultRollbacksRate = 10
+	// defaultRate defines default rate of produced rollbacks per second.
+	defaultRate = 10
 )
 
 // Config defines configuration settings for rollbacks workload.
@@ -18,13 +19,20 @@ type Config struct {
 	PostgresConninfo string
 	// Jobs defines how many workers should be created for producing rollbacks.
 	Jobs uint16
-	// RollbacksRate defines target rate for produced rollbacks per second (per single worker).
-	RollbacksRate int
+	// MinRate defines minimum approximate target rate for produced rollbacks per second (per single worker).
+	MinRate int
+	// MaxRate defines maximum approximate target rate for produced rollbacks per second (per single worker).
+	MaxRate int
 }
 
 func (c *Config) defaults() {
-	if c.RollbacksRate == 0 {
-		c.RollbacksRate = defaultRollbacksRate
+	if c.MinRate == 0 && c.MaxRate == 0 {
+		c.MinRate, c.MaxRate = defaultRate, defaultRate
+	}
+
+	// Min rate cannot be higher than max rate.
+	if c.MinRate > c.MaxRate {
+		c.MinRate = c.MaxRate
 	}
 }
 
@@ -46,12 +54,16 @@ func (w *workload) Run(ctx context.Context) error {
 	}
 	defer pool.Close()
 
-	// calculate inter-query interval for rate throttling
-	interval := 1000000000 / int64(w.config.RollbacksRate)
+	// Calculate interval for rate throttling. Use 900ms as working time and take 100ms as calculation overhead.
+	interval := 900000000 / int64(w.config.MinRate)
 
 	// keep specified number of workers using channel - run new workers until there is any free slot
 	guard := make(chan struct{}, w.config.Jobs)
 	for {
+		if w.config.MinRate != w.config.MaxRate {
+			interval = 900000000 / int64(rand.Intn(w.config.MaxRate-w.config.MinRate)+w.config.MinRate)
+		}
+
 		select {
 		// run workers only when it's possible to write into channel (channel is limited by number of jobs)
 		case guard <- struct{}{}:
