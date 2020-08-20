@@ -19,7 +19,7 @@ Install `golang`, clone the repo and run `make build`. Check `bin/` directory fo
 
 #### Using in your own code
 You can import `noisia` and use necessary workloads in your code. Always use contexts to avoid infinite run. See tiny example below:
-```
+```go
 import (
   "context"
   "fmt"
