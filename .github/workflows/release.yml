@@ -9,6 +9,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+      - name: Set up golangci-lint
+        run: |
+          wget -q https://github.com/golangci/golangci-lint/releases/download/v1.33.0/golangci-lint-1.33.0-linux-amd64.tar.gz
+          tar xvzf golangci-lint-1.33.0-linux-amd64.tar.gz
+          mv golangci-lint-1.33.0-linux-amd64/golangci-lint /usr/local/bin
       - name: Checkout code
         uses: actions/checkout@v2
       - name: Run lint
