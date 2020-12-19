@@ -10,7 +10,7 @@ import (
 
 func TestWorkload_Run(t *testing.T) {
 	config := &Config{
-		PostgresConninfo:     "host=postgres",
+		PostgresConninfo:     "host=postgres user=noisia database=noisia_fixtures",
 		Jobs:                 2,
 		TempFilesRate:        2,
 		TempFilesScaleFactor: 10,

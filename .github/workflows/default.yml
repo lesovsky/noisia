@@ -15,7 +15,8 @@ jobs:
       postgres:
         image: postgres:13-alpine
         env:
-          POSTGRES_USER: postgres
+          POSTGRES_DB: noisia_fixtures
+          POSTGRES_USER: noisia
           POSTGRES_PASSWORD: ""
           POSTGRES_HOST_AUTH_METHOD: trust
         options: >-
