@@ -9,7 +9,7 @@ import (
 
 func TestWorkload_Run(t *testing.T) {
 	config := &Config{
-		PostgresConninfo: "host=127.0.0.1",
+		PostgresConninfo: "host=postgres",
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

@@ -10,7 +10,7 @@ import (
 
 func TestWorkload_Run(t *testing.T) {
 	config := &Config{
-		PostgresConninfo:    "host=127.0.0.1",
+		PostgresConninfo:    "host=postgres",
 		Jobs:                2,
 		IdleXactsNaptimeMin: 1,
 		IdleXactsNaptimeMax: 2,
