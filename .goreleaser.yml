@@ -1,15 +1,26 @@
 builds:
   - binary: noisia
-    goarch: [amd64]
+    main: ./cmd/main.go
+    goarch:
+      - amd64
     goos:
       - linux
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -a -installsuffix cgo
+      - -X main.appName=noisia -X main.gitTag={{.Tag}} -X main.gitCommit={{.Commit}} -X main.gitBranch={{.Branch}}
+
 archives:
   - builds: [noisia]
+
 changelog:
   sort: asc
+
 nfpms:
   - vendor: noisia
     homepage: https://github.com/lesovsky/noisia
     maintainer: Alexey Lesovsky
     description: Harmful workload generator for PostgreSQL
-    formats: [deb]
+    license: BSD-3
+    formats: [ deb, rpm ]
