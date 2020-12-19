@@ -14,8 +14,21 @@
 - `failed connections` - exhaust connections pool (other clients can't connect to Postgres) 
 - ...see built-in help for more runtime options.
 
-#### Usage
-Install `golang`, clone the repo and run `make build`. Check `bin/` directory for `noisia` executable. 
+#### Disclaimer
+
+ATTENTION: USE ONLY FOR TESTING PURPOSES, DO NOT EXECUTE NOISIA AGAINST PRODUCTION, RECKLESS USAGE WILL CAUSE PROBLEMS.
+
+DISCLAIMER: THIS SOFTWARE PROVIDED AS-IS WITH NO CARES AND GUARANTEES RELATED TO YOUR DATABASES. USE AT YOUR OWN RISK.
+
+
+#### Installation and usage
+Check out [releases](https://github.com/lesovsky/noisia/releases) page.
+ 
+#### Using Docker
+```shell script
+docker pull lesovsky/noisia:latest
+docker run --rm -ti lesovsky/noisia:latest noisia --help
+```
 
 #### Using in your own code
 You can import `noisia` and use necessary workloads in your code. Always use contexts to avoid infinite run. See tiny example below:
@@ -44,14 +57,9 @@ func main() {
 ```
 
 #### TODO/Ideas:
-- sequential scans
+If you have any ideas, feel free to open a [discussion](https://github.com/lesovsky/noisia/discussions).
 
-#### Disclaimer
-
-ATTENTION: USE ONLY FOR TESTING PURPOSES, DO NOT EXECUTE NOISIA AGAINST PRODUCTION, RECKLESS USAGE WILL CAUSE PROBLEMS.
-
-DISCLAIMER: THIS SOFTWARE PROVIDED AS-IS WITH NO CARES AND GUARANTEES RELATED TO YOUR DATABASES. USE AT YOUR OWN RISK.
-
+[ ] sequential scans
 
 #### License
 BSD-3. See [LICENSE](LICENSE) for more details.

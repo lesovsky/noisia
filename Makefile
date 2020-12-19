@@ -1,11 +1,12 @@
 APPNAME = noisia
 
+TAG=$(shell git describe --tags |cut -d- -f1)
 COMMIT=$(shell git rev-parse --short HEAD)
 BRANCH=$(shell git rev-parse --abbrev-ref HEAD)
 
-LDFLAGS = -a -installsuffix cgo -ldflags "-X main.appName=${APPNAME} -X main.gitCommit=${COMMIT} -X main.gitBranch=${BRANCH}"
+LDFLAGS = -a -installsuffix cgo -ldflags "-X main.appName=${APPNAME} -X main.gitTag=${TAG} -X main.gitCommit=${COMMIT} -X main.gitBranch=${BRANCH}"
 
-.PHONY: help clean lint test race build
+.PHONY: help clean dep lint test build build-docker
 
 .DEFAULT_GOAL := help
 
@@ -31,3 +32,12 @@ test: dep ## Run tests
 build: dep ## Build
 	mkdir -p ./bin
 	CGO_ENABLED=0 GOOS=linux GOARCH=${GOARCH} go build ${LDFLAGS} -o bin/${APPNAME} ./cmd
+
+docker-build: ## Build docker image
+	docker build -t lesovsky/${APPNAME}:${TAG} .
+	docker image prune --force --filter label=stage=intermediate
+	docker tag lesovsky/${APPNAME}:${TAG} lesovsky/${APPNAME}:latest
+
+docker-push: ## Push docker image to the registry
+	docker push lesovsky/${APPNAME}:${COMMIT}
+	docker push lesovsky/${APPNAME}:latest

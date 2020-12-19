@@ -12,7 +12,7 @@ import (
 )
 
 var (
-	appName, gitCommit, gitBranch string
+	appName, gitTag, gitCommit, gitBranch string
 )
 
 func main() {
@@ -47,7 +47,7 @@ func main() {
 	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}).Level(zerolog.InfoLevel).With().Timestamp().Logger()
 
 	if *showVersion {
-		fmt.Printf("%s %s-%s\n", appName, gitCommit, gitBranch)
+		fmt.Printf("%s %s %s-%s\n", appName, gitTag, gitCommit, gitBranch)
 		os.Exit(0)
 	}
 

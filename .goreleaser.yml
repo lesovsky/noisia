@@ -1,0 +1,15 @@
+builds:
+  - binary: noisia
+    goarch: [amd64]
+    goos:
+      - linux
+archives:
+  - builds: [noisia]
+changelog:
+  sort: asc
+nfpms:
+  - vendor: noisia
+    homepage: https://github.com/lesovsky/noisia
+    maintainer: Alexey Lesovsky
+    description: Harmful workload generator for PostgreSQL
+    formats: [deb]
