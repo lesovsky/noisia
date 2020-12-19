@@ -1,3 +1,7 @@
+before:
+  hooks:
+  - make dep
+
 builds:
   - binary: noisia
     main: ./cmd/main.go
