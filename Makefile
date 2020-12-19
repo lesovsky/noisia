@@ -39,5 +39,5 @@ docker-build: ## Build docker image
 	docker tag lesovsky/${APPNAME}:${TAG} lesovsky/${APPNAME}:latest
 
 docker-push: ## Push docker image to the registry
-	docker push lesovsky/${APPNAME}:${COMMIT}
+	docker push lesovsky/${APPNAME}:${TAG}
 	docker push lesovsky/${APPNAME}:latest
