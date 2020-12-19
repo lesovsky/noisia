@@ -32,7 +32,7 @@ docker run --rm -ti lesovsky/noisia:latest noisia --help
 
 #### Using in your own code
 You can import `noisia` and use necessary workloads in your code. Always use contexts to avoid infinite run. See tiny example below:
-```
+```go
 import (
   "context"
   "fmt"
