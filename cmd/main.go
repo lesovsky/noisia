@@ -39,7 +39,7 @@ func main() {
 		terminateRate         = kingpin.Flag("terminate.rate", "Number of backends/queries terminate per interval").Default("1").Envar("NOISIA_TERMINATE_RATE").Int()
 		terminateInterval     = kingpin.Flag("terminate.interval", "Time interval of single round, in seconds").Default("1").Envar("NOISIA_TERMINATE_INTERVAL").Int()
 		terminateSoftMode     = kingpin.Flag("terminate.soft-mode", "Use queries cancel mode").Default("false").Envar("NOISIA_TERMINATE_SOFT_MODE").Bool()
-		terminateIgnoreSystem = kingpin.Flag("temp-files.ignore-system", "Ignore postgres system processes").Default("false").Envar("NOISIA_TERMINATE_IGNORE_SYSTEM").Bool()
+		terminateIgnoreSystem = kingpin.Flag("terminate.ignore-system", "Ignore postgres system processes").Default("false").Envar("NOISIA_TERMINATE_IGNORE_SYSTEM").Bool()
 		failconns             = kingpin.Flag("failconns", "Run connections exhaustion workload").Default("false").Envar("NOISIA_FAILCONNS").Bool()
 	)
 	kingpin.Parse()
