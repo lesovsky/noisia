@@ -1,5 +1,5 @@
 # stage 1: build
-FROM golang:1.15 as build
+FROM golang:1.16 as build
 LABEL stage=intermediate
 WORKDIR /app
 COPY . .
