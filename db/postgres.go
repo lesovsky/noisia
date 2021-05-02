@@ -48,7 +48,7 @@ func (db *PostgresDB) Exec(ctx context.Context, sql string, arguments ...interfa
 
 // Query executes query expression and returns resulting Rows.
 func (db *PostgresDB) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
-	return db.pool.Query(ctx, sql, args)
+	return db.pool.Query(ctx, sql, args...)
 }
 
 // Close closes database connections pool.
