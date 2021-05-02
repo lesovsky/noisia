@@ -2,8 +2,8 @@ package rollbacks
 
 import (
 	"context"
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/lesovsky/noisia"
+	"github.com/lesovsky/noisia/db"
 	"math/rand"
 	"time"
 )
@@ -48,7 +48,7 @@ func NewWorkload(config *Config) noisia.Workload {
 
 // Run method connects to Postgres and starts the workload.
 func (w *workload) Run(ctx context.Context) error {
-	pool, err := pgxpool.Connect(ctx, w.config.PostgresConninfo)
+	pool, err := db.NewPostgresDB(w.config.PostgresConninfo)
 	if err != nil {
 		return err
 	}
@@ -80,16 +80,16 @@ func (w *workload) Run(ctx context.Context) error {
 	}
 }
 
-func startXactRollback(ctx context.Context, pool *pgxpool.Pool) {
+func startXactRollback(ctx context.Context, pool db.DB) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
 
-	rows, err := tx.Query(ctx, "SELECT * FROM pg_stat_replication")
+	_, err = tx.Query(ctx, "SELECT * FROM pg_stat_replication")
 	if err != nil {
 		return
 	}
-	rows.Close()
+
+	_ = tx.Rollback(ctx)
 }

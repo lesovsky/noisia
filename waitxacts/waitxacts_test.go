@@ -3,6 +3,7 @@ package waitxacts
 import (
 	"context"
 	"github.com/lesovsky/noisia"
+	"github.com/lesovsky/noisia/db"
 	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"
@@ -10,7 +11,7 @@ import (
 
 func TestWorkload_Run(t *testing.T) {
 	config := &Config{
-		PostgresConninfo:     "host=postgres user=noisia database=noisia_fixtures",
+		PostgresConninfo:     db.TestConninfo,
 		Jobs:                 2,
 		WaitXactsLocktimeMin: 1,
 		WaitXactsLocktimeMax: 2,

@@ -2,8 +2,8 @@ package waitxacts
 
 import (
 	"context"
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/lesovsky/noisia"
+	"github.com/lesovsky/noisia/db"
 	"math/rand"
 	"time"
 )
@@ -38,16 +38,16 @@ func (c *Config) defaults() {
 
 type workload struct {
 	config *Config
-	pool   *pgxpool.Pool
+	pool   db.DB
 }
 
 func NewWorkload(config *Config) noisia.Workload {
 	config.defaults()
-	return &workload{config, &pgxpool.Pool{}}
+	return &workload{config, nil}
 }
 
 func (w *workload) Run(ctx context.Context) error {
-	pool, err := pgxpool.Connect(ctx, w.config.PostgresConninfo)
+	pool, err := db.NewPostgresDB(w.config.PostgresConninfo)
 	if err != nil {
 		return err
 	}
@@ -90,12 +90,12 @@ func (w *workload) prepare(ctx context.Context) error {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	_, err = tx.Exec(ctx, "CREATE TABLE IF NOT EXISTS _noisia_waitxacts_workload (payload bigint)")
+	_, _, err = tx.Exec(ctx, "CREATE TABLE IF NOT EXISTS _noisia_waitxacts_workload (payload bigint)")
 	if err != nil {
 		return err
 	}
 
-	_, err = tx.Exec(ctx, "INSERT INTO _noisia_waitxacts_workload (payload) VALUES (0)")
+	_, _, err = tx.Exec(ctx, "INSERT INTO _noisia_waitxacts_workload (payload) VALUES (0)")
 	if err != nil {
 		return err
 	}
@@ -105,21 +105,21 @@ func (w *workload) prepare(ctx context.Context) error {
 }
 
 func (w *workload) cleanup(ctx context.Context) error {
-	_, err := w.pool.Exec(ctx, "DROP TABLE IF EXISTS _noisia_waitxacts_workload")
+	_, _, err := w.pool.Exec(ctx, "DROP TABLE IF EXISTS _noisia_waitxacts_workload")
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func startConcurrentXact(ctx context.Context, pool *pgxpool.Pool, idle time.Duration) {
+func startConcurrentXact(ctx context.Context, pool db.DB, idle time.Duration) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	_, err = tx.Exec(ctx, "UPDATE _noisia_waitxacts_workload SET payload = $1", rand.Int())
+	_, _, err = tx.Exec(ctx, "UPDATE _noisia_waitxacts_workload SET payload = $1", rand.Int())
 	if err != nil {
 		return
 	}

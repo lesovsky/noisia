@@ -3,13 +3,14 @@ package rollbacks
 import (
 	"context"
 	"github.com/lesovsky/noisia"
+	"github.com/lesovsky/noisia/db"
 	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"
 )
 
 func TestWorkload_Run(t *testing.T) {
-	config := &Config{PostgresConninfo: "host=postgres user=noisia database=noisia_fixtures", Jobs: 2, MinRate: 2, MaxRate: 2}
+	config := &Config{PostgresConninfo: db.TestConninfo, Jobs: 2, MinRate: 2, MaxRate: 2}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

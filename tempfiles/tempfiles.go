@@ -2,8 +2,8 @@ package tempfiles
 
 import (
 	"context"
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/lesovsky/noisia"
+	"github.com/lesovsky/noisia/db"
 	"time"
 )
 
@@ -30,15 +30,15 @@ type Config struct {
 
 type workload struct {
 	config *Config
-	pool   *pgxpool.Pool
+	pool   db.DB
 }
 
 func NewWorkload(config *Config) noisia.Workload {
-	return &workload{config, &pgxpool.Pool{}}
+	return &workload{config, nil}
 }
 
 func (w *workload) Run(ctx context.Context) error {
-	pool, err := pgxpool.Connect(ctx, w.config.PostgresConninfo)
+	pool, err := db.NewPostgresDB(w.config.PostgresConninfo)
 	if err != nil {
 		return err
 	}
@@ -64,7 +64,7 @@ func (w *workload) Run(ctx context.Context) error {
 		case guard <- struct{}{}:
 			go func() {
 				// Don't care about errors.
-				_, _ = pool.Exec(ctx, querySelectData)
+				_, _, _ = pool.Exec(ctx, querySelectData)
 				time.Sleep(time.Duration(interval) * time.Nanosecond)
 
 				<-guard
@@ -77,11 +77,11 @@ func (w *workload) Run(ctx context.Context) error {
 }
 
 func (w *workload) prepare(ctx context.Context) error {
-	_, err := w.pool.Exec(ctx, queryCreateTable)
+	_, _, err := w.pool.Exec(ctx, queryCreateTable)
 	if err != nil {
 		return err
 	}
-	_, err = w.pool.Exec(ctx, queryLoadData, 1000*w.config.TempFilesScaleFactor)
+	_, _, err = w.pool.Exec(ctx, queryLoadData, 1000*w.config.TempFilesScaleFactor)
 	if err != nil {
 		return err
 	}
@@ -89,7 +89,7 @@ func (w *workload) prepare(ctx context.Context) error {
 }
 
 func (w *workload) cleanup(ctx context.Context) error {
-	_, err := w.pool.Exec(ctx, "DROP TABLE IF EXISTS _noisia_tempfiles_workload")
+	_, _, err := w.pool.Exec(ctx, "DROP TABLE IF EXISTS _noisia_tempfiles_workload")
 	if err != nil {
 		return err
 	}

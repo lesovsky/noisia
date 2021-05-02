@@ -3,8 +3,8 @@ package terminate
 import (
 	"context"
 	"fmt"
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/lesovsky/noisia"
+	"github.com/lesovsky/noisia/db"
 	"time"
 )
 
@@ -40,18 +40,18 @@ func (c *Config) defaults() {
 
 type workload struct {
 	config *Config
-	pool   *pgxpool.Pool
+	pool   db.DB
 }
 
 // NewWorkload creates a new workload with specified config.
 func NewWorkload(config *Config) noisia.Workload {
 	config.defaults()
-	return &workload{config, &pgxpool.Pool{}}
+	return &workload{config, nil}
 }
 
 // Run method connects to Postgres and starts the workload.
 func (w *workload) Run(ctx context.Context) error {
-	pool, err := pgxpool.Connect(ctx, w.config.PostgresConninfo)
+	pool, err := db.NewPostgresDB(w.config.PostgresConninfo)
 	if err != nil {
 		return err
 	}
@@ -88,7 +88,7 @@ func (w *workload) signalProcess(ctx context.Context) {
 		signalClientBackendsOnly = "AND backend_type = 'client backend'"
 	}
 
-	_, _ = w.pool.Exec(
+	_, _, _ = w.pool.Exec(
 		ctx,
 		fmt.Sprintf("SELECT %s FROM pg_stat_activity WHERE pid <> pg_backend_pid() %s ORDER BY random() LIMIT 1", signalFuncname, signalClientBackendsOnly),
 	)
