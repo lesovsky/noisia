@@ -2,8 +2,8 @@ package idlexacts
 
 import (
 	"context"
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/lesovsky/noisia"
+	"github.com/lesovsky/noisia/db"
 	"math/rand"
 	"time"
 )
@@ -47,24 +47,29 @@ func NewWorkload(config *Config) noisia.Workload {
 	return &workload{config}
 }
 
-// Run method connects to Postgres and starts the workload.
+// Run connects to Postgres and starts the workload.
 func (w *workload) Run(ctx context.Context) error {
-	pool, err := pgxpool.Connect(ctx, w.config.PostgresConninfo)
+	pool, err := db.NewPostgresDB(w.config.PostgresConninfo)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
 
-	// Keep required number of workers using channel - run new workers until there is any free slot.
-	guard := make(chan struct{}, w.config.Jobs)
-	min := w.config.IdleXactsNaptimeMin
-	max := w.config.IdleXactsNaptimeMax
+	return startLoop(ctx, pool, w.config.Jobs, w.config.IdleXactsNaptimeMin, w.config.IdleXactsNaptimeMax)
+}
+
+// startLoop starts workload using passed settings and database connection.
+func startLoop(ctx context.Context, pool db.DB, jobs uint16, minTime, maxTime int) error {
+	// While running, keep required number of workers using channel.
+	// Run new workers only until there is any free slot.
+
+	guard := make(chan struct{}, jobs)
 	for {
 		select {
 		// Run workers only when it's possible to write into channel (channel is limited by number of jobs).
 		case guard <- struct{}{}:
 			go func() {
-				naptime := time.Duration(rand.Intn(max-min)+min) * time.Second
+				naptime := time.Duration(rand.Intn(maxTime-minTime)+minTime) * time.Second
 				startSingleIdleXact(ctx, pool, naptime)
 
 				// When worker finishes, read from the channel to allow starting another worker.
@@ -78,18 +83,17 @@ func (w *workload) Run(ctx context.Context) error {
 }
 
 // startSingleIdleXact starts transaction and goes sleeping for specified amount of time.
-func startSingleIdleXact(ctx context.Context, pool *pgxpool.Pool, naptime time.Duration) {
+func startSingleIdleXact(ctx context.Context, pool db.DB, naptime time.Duration) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	rows, err := tx.Query(ctx, "SELECT * FROM pg_stat_database")
+	_, _, err = tx.Exec(ctx, "SELECT * FROM pg_stat_database")
 	if err != nil {
 		return
 	}
-	rows.Close()
 
 	// Stop execution only if context has been done or naptime interval is timed out
 	timer := time.NewTimer(naptime)
