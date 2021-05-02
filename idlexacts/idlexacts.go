@@ -2,9 +2,12 @@ package idlexacts
 
 import (
 	"context"
+	"fmt"
 	"github.com/lesovsky/noisia"
 	"github.com/lesovsky/noisia/db"
+	"github.com/lesovsky/noisia/targeting"
 	"math/rand"
+	"strings"
 	"time"
 )
 
@@ -13,6 +16,8 @@ const (
 	defaultIdleXactsNaptimeMin = 5
 	// defaultIdleXactsNaptimeMax defines default upper threshold for idle interval.
 	defaultIdleXactsNaptimeMax = 20
+	// maxAffectedTables defines max number of tables which will be affected by idle transactions.
+	maxAffectedTables = 3
 )
 
 // Config defines configuration settings for idle transactions workload.
@@ -21,6 +26,8 @@ type Config struct {
 	PostgresConninfo string
 	// Jobs defines how many concurrent idle transactions should be running during workload.
 	Jobs uint16
+	// Active enables intervention into already running workload.
+	Active bool
 	// IdleXactsNaptimeMin defines lower threshold when transactions can idle.
 	IdleXactsNaptimeMin int
 	// IdleXactsNaptimeMax defines upper threshold when transactions can idle.
@@ -55,11 +62,26 @@ func (w *workload) Run(ctx context.Context) error {
 	}
 	defer pool.Close()
 
-	return startLoop(ctx, pool, w.config.Jobs, w.config.IdleXactsNaptimeMin, w.config.IdleXactsNaptimeMax)
+	// If active mode, found the top-N most writable (delete/update) tables.
+	// Each idle transaction will produce a write operation (which will rolled back
+	// at the end). As a result, write operation and idle transaction will lead to
+	// keep dead rows versions and affect overall performance.
+	var tables []string
+	if w.config.Active {
+		tables, err = targeting.TopWriteTables(pool, maxAffectedTables)
+		if err != nil {
+			return err
+		}
+	} else {
+		// Use slice with empty string to avoid panic
+		tables = []string{""}
+	}
+
+	return startLoop(ctx, pool, tables, w.config.Jobs, w.config.IdleXactsNaptimeMin, w.config.IdleXactsNaptimeMax)
 }
 
 // startLoop starts workload using passed settings and database connection.
-func startLoop(ctx context.Context, pool db.DB, jobs uint16, minTime, maxTime int) error {
+func startLoop(ctx context.Context, pool db.DB, tables []string, jobs uint16, minTime, maxTime int) error {
 	// While running, keep required number of workers using channel.
 	// Run new workers only until there is any free slot.
 
@@ -69,8 +91,10 @@ func startLoop(ctx context.Context, pool db.DB, jobs uint16, minTime, maxTime in
 		// Run workers only when it's possible to write into channel (channel is limited by number of jobs).
 		case guard <- struct{}{}:
 			go func() {
+				table := tables[rand.Intn(len(tables))]
 				naptime := time.Duration(rand.Intn(maxTime-minTime)+minTime) * time.Second
-				startSingleIdleXact(ctx, pool, naptime)
+
+				startSingleIdleXact(ctx, pool, table, naptime)
 
 				// When worker finishes, read from the channel to allow starting another worker.
 				<-guard
@@ -83,26 +107,46 @@ func startLoop(ctx context.Context, pool db.DB, jobs uint16, minTime, maxTime in
 }
 
 // startSingleIdleXact starts transaction and goes sleeping for specified amount of time.
-func startSingleIdleXact(ctx context.Context, pool db.DB, naptime time.Duration) {
+func startSingleIdleXact(ctx context.Context, pool db.DB, table string, naptime time.Duration) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	_, _, err = tx.Exec(ctx, "SELECT * FROM pg_stat_database")
-	if err != nil {
-		return
+	// When table is specified (active mode) delete one single row from table. Later
+	// transaction will be rolled back in the end, and made changes also will be discarded.
+	// Also, any errors could be ignored, because in this case transaction also stay idle.
+	if table != "" {
+		_ = deleteSingleRow(tx, table)
 	}
 
-	// Stop execution only if context has been done or naptime interval is timed out
+	// Stop execution only if context has been done or naptime interval is timed out.
 	timer := time.NewTimer(naptime)
 	select {
 	case <-ctx.Done():
 		return
 	case <-timer.C:
 		// Don't care about errors.
-		_ = tx.Commit(ctx)
+		_ = tx.Rollback(ctx)
 		return
 	}
+}
+
+// deleteSingleRow executes delete of single random row from passed table within a transaction.
+func deleteSingleRow(tx db.Tx, name string) error {
+	ff := strings.Split(name, ".")
+	if len(ff) != 2 {
+		return fmt.Errorf("incomplete table name: '%s'", name)
+	}
+
+	tablename := ff[1]
+
+	q := fmt.Sprintf("DELETE FROM %s WHERE %s = (SELECT %s FROM %s ORDER BY random() LIMIT 1)", name, tablename, tablename, name)
+	_, _, err := tx.Exec(context.Background(), q)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

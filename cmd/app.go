@@ -21,6 +21,7 @@ type config struct {
 	doCleanup             bool
 	postgresConninfo      string
 	jobs                  uint16 // max 65535
+	active                bool   // Controls active mode with intervention into already running workload.
 	duration              int
 	idleXacts             bool
 	idleXactsNaptimeMin   int
@@ -56,7 +57,7 @@ func runApplication(ctx context.Context, c *config, log zerolog.Logger) error {
 	var wg sync.WaitGroup
 
 	if c.idleXacts {
-		log.Info().Msg("start idle xacts workload")
+		log.Info().Msg("start idle transactions workload")
 		wg.Add(1)
 		go startIdleXactsWorkload(ctx, &wg, c)
 	}
@@ -102,12 +103,14 @@ func runApplication(ctx context.Context, c *config, log zerolog.Logger) error {
 	return nil
 }
 
+// startIdleXactsWorkload start generating workload with idle transactions.
 func startIdleXactsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) {
 	defer wg.Done()
 
 	workload := idlexacts.NewWorkload(&idlexacts.Config{
 		PostgresConninfo:    c.postgresConninfo,
 		Jobs:                c.jobs,
+		Active:              c.active,
 		IdleXactsNaptimeMin: c.idleXactsNaptimeMin,
 		IdleXactsNaptimeMax: c.idleXactsNaptimeMax,
 	})

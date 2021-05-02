@@ -38,7 +38,7 @@ func Test_startLoop(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	assert.NoError(t, startLoop(ctx, pool, 2, 1, 2))
+	assert.NoError(t, startLoop(ctx, pool, []string{""}, 2, 1, 2))
 }
 
 func Test_startSingleIdleXact(t *testing.T) {
@@ -47,5 +47,5 @@ func Test_startSingleIdleXact(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	startSingleIdleXact(ctx, pool, 10*time.Millisecond)
+	startSingleIdleXact(ctx, pool, "", 10*time.Millisecond)
 }
