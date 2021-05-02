@@ -6,6 +6,8 @@ import (
 	"github.com/jackc/pgx/v4/pgxpool"
 )
 
+/* Database connections pool implementation */
+
 // PostgresDB implements pgxpool.Pool as DB interface.
 type PostgresDB struct {
 	pool *pgxpool.Pool
@@ -54,14 +56,7 @@ func (db *PostgresDB) Close() {
 	return
 }
 
-/* Transaction wrapper */
-
-type Tx interface {
-	Commit(ctx context.Context) error
-	Rollback(ctx context.Context) error
-	Exec(ctx context.Context, sql string, arguments ...interface{}) (int64, string, error)
-	Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error)
-}
+/* Transaction implementation */
 
 // PostgresTx implements PostgreSQL transaction object.
 type PostgresTx struct {
@@ -91,4 +86,27 @@ func (tx *PostgresTx) Exec(ctx context.Context, sql string, arguments ...interfa
 // Query executes query expression inside the transaction and returns resulting Rows.
 func (tx *PostgresTx) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
 	return tx.tx.Query(ctx, sql, args)
+}
+
+/* Connection implementation */
+
+// PostgresConn wraps *pgx.Conn.
+type PostgresConn struct {
+	conn *pgx.Conn
+}
+
+// Connect accepts connection string and create new connection.
+func Connect(ctx context.Context, connString string) (Conn, error) {
+	conn, err := pgx.Connect(ctx, connString)
+	if err != nil {
+		return nil, err
+	}
+
+	return &PostgresConn{
+		conn: conn,
+	}, nil
+}
+
+func (c *PostgresConn) Close() error {
+	return c.conn.Close(context.Background())
 }

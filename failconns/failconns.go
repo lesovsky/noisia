@@ -2,8 +2,8 @@ package failconns
 
 import (
 	"context"
-	"github.com/jackc/pgx/v4"
 	"github.com/lesovsky/noisia"
+	"github.com/lesovsky/noisia/db"
 	"time"
 )
 
@@ -29,7 +29,7 @@ func NewWorkload(config *Config) noisia.Workload {
 
 // Run method connects to Postgres and starts the workload.
 func (w *workload) Run(ctx context.Context) error {
-	conns := make([]*pgx.Conn, 0, 1000)
+	conns := make([]db.Conn, 0, 1000)
 	interval := defaultConnInterval
 	timer := time.NewTimer(interval)
 
@@ -37,7 +37,7 @@ func (w *workload) Run(ctx context.Context) error {
 		// Wait until timer has been expired or context has been done.
 		select {
 		case <-timer.C:
-			c, err := pgx.Connect(ctx, w.config.PostgresConninfo)
+			c, err := db.Connect(ctx, w.config.PostgresConninfo)
 			if err != nil {
 				// if connect has failed, increase interval between connects
 				interval = interval * 2
@@ -59,8 +59,8 @@ func (w *workload) Run(ctx context.Context) error {
 	}
 }
 
-func (w *workload) cleanup(conns []*pgx.Conn) {
+func (w *workload) cleanup(conns []db.Conn) {
 	for i := range conns {
-		_ = conns[i].Close(context.Background())
+		_ = conns[i].Close()
 	}
 }

@@ -2,8 +2,8 @@ package deadlocks
 
 import (
 	"context"
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/lesovsky/noisia"
+	"github.com/lesovsky/noisia/db"
 	"math/rand"
 	"sync"
 	"time"
@@ -19,17 +19,17 @@ type Config struct {
 
 type workload struct {
 	config *Config
-	pool   *pgxpool.Pool
+	pool   db.DB
 }
 
 // NewWorkload creates a new workload with specified config.
 func NewWorkload(config *Config) noisia.Workload {
-	return &workload{config, &pgxpool.Pool{}}
+	return &workload{config, nil}
 }
 
 // Run method connects to Postgres and starts the workload.
 func (w *workload) Run(ctx context.Context) error {
-	pool, err := pgxpool.Connect(ctx, w.config.PostgresConninfo)
+	pool, err := db.NewPostgresDB(w.config.PostgresConninfo)
 	if err != nil {
 		return err
 	}
@@ -63,7 +63,7 @@ func (w *workload) Run(ctx context.Context) error {
 }
 
 func (w *workload) prepare(ctx context.Context) error {
-	_, err := w.pool.Exec(ctx, "CREATE TABLE IF NOT EXISTS _noisia_deadlocks_workload (id bigint, payload text)")
+	_, _, err := w.pool.Exec(ctx, "CREATE TABLE IF NOT EXISTS _noisia_deadlocks_workload (id bigint, payload text)")
 	if err != nil {
 		return err
 	}
@@ -71,7 +71,7 @@ func (w *workload) prepare(ctx context.Context) error {
 }
 
 func (w *workload) cleanup(ctx context.Context) error {
-	_, err := w.pool.Exec(ctx, "DROP TABLE IF EXISTS _noisia_deadlocks_workload")
+	_, _, err := w.pool.Exec(ctx, "DROP TABLE IF EXISTS _noisia_deadlocks_workload")
 	if err != nil {
 		return err
 	}
@@ -81,7 +81,7 @@ func (w *workload) cleanup(ctx context.Context) error {
 func (w *workload) executeDeadlock(ctx context.Context) {
 	// insert two rows
 	id1, id2 := rand.Int(), rand.Int()
-	_, err := w.pool.Exec(ctx, "INSERT INTO _noisia_deadlocks_workload (id, payload) VALUES ($1, md5(random()::text)), ($2, md5(random()::text))", id1, id2)
+	_, _, err := w.pool.Exec(ctx, "INSERT INTO _noisia_deadlocks_workload (id, payload) VALUES ($1, md5(random()::text)), ($2, md5(random()::text))", id1, id2)
 	if err != nil {
 		return
 	}
@@ -111,7 +111,7 @@ func (w *workload) runUpdateXact(ctx context.Context, id1 int, id2 int) {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Update row #1
-	_, err = tx.Exec(ctx, "UPDATE _noisia_deadlocks_workload SET payload = md5(random()::text) WHERE id = $1", id1)
+	_, _, err = tx.Exec(ctx, "UPDATE _noisia_deadlocks_workload SET payload = md5(random()::text) WHERE id = $1", id1)
 	if err != nil {
 		return
 	}
@@ -120,7 +120,7 @@ func (w *workload) runUpdateXact(ctx context.Context, id1 int, id2 int) {
 	time.Sleep(10 * time.Millisecond)
 
 	// Update row #2
-	_, err = tx.Exec(ctx, "UPDATE _noisia_deadlocks_workload SET payload = md5(random()::text) WHERE id = $1", id2)
+	_, _, err = tx.Exec(ctx, "UPDATE _noisia_deadlocks_workload SET payload = md5(random()::text) WHERE id = $1", id2)
 	if err != nil {
 		return
 	}

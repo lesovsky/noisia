@@ -2,6 +2,7 @@ package failconns
 
 import (
 	"context"
+	"github.com/lesovsky/noisia/db"
 	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"
@@ -9,7 +10,7 @@ import (
 
 func TestWorkload_Run(t *testing.T) {
 	config := &Config{
-		PostgresConninfo: "host=postgres user=noisia database=noisia_fixtures",
+		PostgresConninfo: db.TestConninfo,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
