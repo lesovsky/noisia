@@ -48,7 +48,7 @@ func NewWorkload(config *Config) noisia.Workload {
 
 // Run method connects to Postgres and starts the workload.
 func (w *workload) Run(ctx context.Context) error {
-	pool, err := db.NewPostgresDB(w.config.PostgresConninfo)
+	pool, err := db.NewPostgresDB(ctx, w.config.PostgresConninfo)
 	if err != nil {
 		return err
 	}

@@ -14,8 +14,8 @@ type PostgresDB struct {
 }
 
 // NewPostgresDB creates new database connections pool.
-func NewPostgresDB(conninfo string) (DB, error) {
-	pool, err := pgxpool.Connect(context.TODO(), conninfo)
+func NewPostgresDB(ctx context.Context, conninfo string) (DB, error) {
+	pool, err := pgxpool.Connect(ctx, conninfo)
 	if err != nil {
 		return nil, err
 	}
