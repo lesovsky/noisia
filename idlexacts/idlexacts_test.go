@@ -41,6 +41,20 @@ func Test_startLoop(t *testing.T) {
 	assert.NoError(t, startLoop(ctx, pool, []string{""}, 2, 1, 2))
 }
 
+func Test_selectRandomTable(t *testing.T) {
+	testcases := []struct {
+		tables []string
+		want   int
+	}{
+		{tables: []string{"test.test1", "test.test2", "test.test3"}, want: 10},
+		{tables: []string{}, want: 0},
+	}
+
+	for _, tc := range testcases {
+		assert.Equal(t, tc.want, len(selectRandomTable(tc.tables)))
+	}
+}
+
 func Test_startSingleIdleXact(t *testing.T) {
 	pool, err := db.NewTestDB()
 	assert.NoError(t, err)

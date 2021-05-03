@@ -21,7 +21,6 @@ type config struct {
 	doCleanup             bool
 	postgresConninfo      string
 	jobs                  uint16 // max 65535
-	active                bool   // Controls active mode with intervention into already running workload.
 	duration              int
 	idleXacts             bool
 	idleXactsNaptimeMin   int
@@ -110,7 +109,6 @@ func startIdleXactsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 	workload := idlexacts.NewWorkload(&idlexacts.Config{
 		PostgresConninfo:    c.postgresConninfo,
 		Jobs:                c.jobs,
-		Active:              c.active,
 		IdleXactsNaptimeMin: c.idleXactsNaptimeMin,
 		IdleXactsNaptimeMax: c.idleXactsNaptimeMax,
 	})

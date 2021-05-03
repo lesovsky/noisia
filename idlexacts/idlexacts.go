@@ -25,8 +25,6 @@ type Config struct {
 	PostgresConninfo string
 	// Jobs defines how many concurrent idle transactions should be running during workload.
 	Jobs uint16
-	// Active enables intervention into already running workload.
-	Active bool
 	// IdleXactsNaptimeMin defines lower threshold when transactions can idle.
 	IdleXactsNaptimeMin int
 	// IdleXactsNaptimeMax defines upper threshold when transactions can idle.
@@ -61,19 +59,13 @@ func (w *workload) Run(ctx context.Context) error {
 	}
 	defer pool.Close()
 
-	// If active mode, found the top-N most writable (delete/update) tables.
+	// Looking for the top-N most writable (delete/update) tables.
 	// Each idle transaction will produce a write operation (which will rolled back
 	// at the end). As a result, write operation and idle transaction will lead to
 	// keep dead rows versions and affect overall performance.
-	var tables []string
-	if w.config.Active {
-		tables, err = targeting.TopWriteTables(pool, maxAffectedTables)
-		if err != nil {
-			return err
-		}
-	} else {
-		// Use slice with empty string to avoid panic when selecting random table from slice.
-		tables = []string{""}
+	tables, err := targeting.TopWriteTables(pool, maxAffectedTables)
+	if err != nil {
+		return err
 	}
 
 	return startLoop(ctx, pool, tables, w.config.Jobs, w.config.IdleXactsNaptimeMin, w.config.IdleXactsNaptimeMax)
@@ -90,7 +82,10 @@ func startLoop(ctx context.Context, pool db.DB, tables []string, jobs uint16, mi
 		// Run workers only when it's possible to write into channel (channel is limited by number of jobs).
 		case guard <- struct{}{}:
 			go func() {
-				table := tables[rand.Intn(len(tables))]
+				if len(tables) > 0 {
+
+				}
+				table := selectRandomTable(tables)
 				naptime := time.Duration(rand.Intn(maxTime-minTime)+minTime) * time.Second
 
 				startSingleIdleXact(ctx, pool, table, naptime)
@@ -113,9 +108,9 @@ func startSingleIdleXact(ctx context.Context, pool db.DB, table string, naptime 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// When table is specified (active mode) create a temp table using single row from target
-	// table. Later, transaction will be rolled back and temp table will be dropped. Also,
-	// any errors could be ignored, because in this case transaction also stay idle.
+	// When table is specified, create a temp table using single row from target table. Later,
+	// transaction will be rolled back and temp table will be dropped. Also, any errors could
+	// be ignored, because in this case transaction (aborted) also stay idle.
 	if table != "" {
 		_ = createTempTable(tx, table)
 	}
@@ -130,6 +125,15 @@ func startSingleIdleXact(ctx context.Context, pool db.DB, table string, naptime 
 		_ = tx.Rollback(ctx)
 		return
 	}
+}
+
+// selectRandomTable returns random table from passed list. Empty value returned if empty list.
+func selectRandomTable(tables []string) string {
+	if len(tables) == 0 {
+		return ""
+	}
+
+	return tables[rand.Intn(len(tables))]
 }
 
 // createTempTable creates a temporary table within a transaction using single row from passed table.
