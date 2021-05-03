@@ -37,8 +37,8 @@ func (db *PostgresDB) Begin(ctx context.Context) (Tx, error) {
 }
 
 // Exec executes query expression and returns resulting tag.
-func (db *PostgresDB) Exec(ctx context.Context, sql string, arguments ...interface{}) (int64, string, error) {
-	tag, err := db.pool.Exec(ctx, sql, arguments...)
+func (db *PostgresDB) Exec(ctx context.Context, sql string, args ...interface{}) (int64, string, error) {
+	tag, err := db.pool.Exec(ctx, sql, args...)
 	if err != nil {
 		return 0, "", err
 	}
@@ -74,8 +74,8 @@ func (tx *PostgresTx) Rollback(ctx context.Context) error {
 }
 
 // Exec executes query expression inside the transaction and returns resulting tag.
-func (tx *PostgresTx) Exec(ctx context.Context, sql string, arguments ...interface{}) (int64, string, error) {
-	tag, err := tx.tx.Exec(ctx, sql, arguments...)
+func (tx *PostgresTx) Exec(ctx context.Context, sql string, args ...interface{}) (int64, string, error) {
+	tag, err := tx.tx.Exec(ctx, sql, args...)
 	if err != nil {
 		return 0, "", err
 	}
@@ -85,7 +85,7 @@ func (tx *PostgresTx) Exec(ctx context.Context, sql string, arguments ...interfa
 
 // Query executes query expression inside the transaction and returns resulting Rows.
 func (tx *PostgresTx) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
-	return tx.tx.Query(ctx, sql, args)
+	return tx.tx.Query(ctx, sql, args...)
 }
 
 /* Connection implementation */
