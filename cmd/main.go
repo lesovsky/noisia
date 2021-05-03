@@ -93,7 +93,12 @@ func main() {
 		cancel()
 	}()
 
-	logger.Info().Msgf("shutdown: %s", <-doExit)
+	rc := <-doExit
+	if rc != nil {
+		logger.Info().Msgf("shutdown: %s", rc)
+	} else {
+		logger.Info().Msgf("shutdown: done")
+	}
 }
 
 func listenSignals() error {
