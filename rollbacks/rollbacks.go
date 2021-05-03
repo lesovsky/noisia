@@ -5,6 +5,7 @@ import (
 	"github.com/lesovsky/noisia"
 	"github.com/lesovsky/noisia/db"
 	"math/rand"
+	"sync"
 	"time"
 )
 
@@ -54,39 +55,52 @@ func (w *workload) Run(ctx context.Context) error {
 	}
 	defer pool.Close()
 
-	// Calculate interval for rate throttling. Use 900ms as working time and take 100ms as calculation overhead.
-	interval := 900000000 / int64(w.config.MinRate)
+	var wg sync.WaitGroup
+	for i := 0; i < int(w.config.Jobs); i++ {
+		wg.Add(1)
+		go func() {
+			startWorker(ctx, pool, w.config.MinRate, w.config.MaxRate)
+			wg.Done()
+		}()
+	}
 
-	// keep specified number of workers using channel - run new workers until there is any free slot
-	guard := make(chan struct{}, w.config.Jobs)
+	wg.Wait()
+	return nil
+}
+
+// startLoop start workload loop until context timeout exceeded.
+func startWorker(ctx context.Context, pool db.DB, minRate, maxRate int) {
 	for {
-		if w.config.MinRate != w.config.MaxRate {
-			interval = 900000000 / int64(rand.Intn(w.config.MaxRate-w.config.MinRate)+w.config.MinRate)
+		startXactRollback(ctx, pool)
+
+		// Calculate interval for rate throttling. Use 900ms as working time and take 100ms as calculation/executing overhead.
+		var interval int64
+		if minRate != maxRate {
+			interval = 900000000 / int64(rand.Intn(maxRate-minRate)+minRate)
+		} else {
+			interval = 900000000 / int64(minRate)
 		}
 
-		select {
-		// run workers only when it's possible to write into channel (channel is limited by number of jobs)
-		case guard <- struct{}{}:
-			go func() {
-				startXactRollback(ctx, pool)
-				time.Sleep(time.Duration(interval) * time.Nanosecond)
+		timer := time.NewTimer(time.Duration(interval) * time.Nanosecond)
 
-				<-guard
-			}()
+		select {
+		case <-timer.C:
+			continue
 		case <-ctx.Done():
 			//log.Info("exit signaled, stop rollbacks workload")
-			return nil
+			return
 		}
 	}
 }
 
+// startXactRollback executes transaction with rollback.
 func startXactRollback(ctx context.Context, pool db.DB) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return
 	}
 
-	_, err = tx.Query(ctx, "SELECT * FROM pg_stat_replication")
+	_, _, err = tx.Exec(ctx, "SELECT * FROM pg_stat_replication")
 	if err != nil {
 		return
 	}
