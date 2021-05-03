@@ -7,7 +7,6 @@ import (
 	"github.com/lesovsky/noisia/db"
 	"github.com/lesovsky/noisia/targeting"
 	"math/rand"
-	"strings"
 	"time"
 )
 
@@ -73,7 +72,7 @@ func (w *workload) Run(ctx context.Context) error {
 			return err
 		}
 	} else {
-		// Use slice with empty string to avoid panic
+		// Use slice with empty string to avoid panic when selecting random table from slice.
 		tables = []string{""}
 	}
 
@@ -114,11 +113,11 @@ func startSingleIdleXact(ctx context.Context, pool db.DB, table string, naptime 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// When table is specified (active mode) delete one single row from table. Later
-	// transaction will be rolled back in the end, and made changes also will be discarded.
-	// Also, any errors could be ignored, because in this case transaction also stay idle.
+	// When table is specified (active mode) create a temp table using single row from target
+	// table. Later, transaction will be rolled back and temp table will be dropped. Also,
+	// any errors could be ignored, because in this case transaction also stay idle.
 	if table != "" {
-		_ = deleteSingleRow(tx, table)
+		_ = createTempTable(tx, table)
 	}
 
 	// Stop execution only if context has been done or naptime interval is timed out.
@@ -133,16 +132,9 @@ func startSingleIdleXact(ctx context.Context, pool db.DB, table string, naptime 
 	}
 }
 
-// deleteSingleRow executes delete of single random row from passed table within a transaction.
-func deleteSingleRow(tx db.Tx, name string) error {
-	ff := strings.Split(name, ".")
-	if len(ff) != 2 {
-		return fmt.Errorf("incomplete table name: '%s'", name)
-	}
-
-	tablename := ff[1]
-
-	q := fmt.Sprintf("DELETE FROM %s WHERE %s = (SELECT %s FROM %s ORDER BY random() LIMIT 1)", name, tablename, tablename, name)
+// createTempTable creates a temporary table within a transaction using single row from passed table.
+func createTempTable(tx db.Tx, table string) error {
+	q := fmt.Sprintf("CREATE TEMP TABLE noisia_%d ON COMMIT DROP AS SELECT * FROM %s LIMIT 1", time.Now().Unix(), table)
 	_, _, err := tx.Exec(context.Background(), q)
 	if err != nil {
 		return err
