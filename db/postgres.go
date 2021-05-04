@@ -107,6 +107,21 @@ func Connect(ctx context.Context, connString string) (Conn, error) {
 	}, nil
 }
 
+// Exec executes query expression and returns number of affected rows and resulting tag.
+func (c *PostgresConn) Exec(ctx context.Context, sql string, args ...interface{}) (int64, string, error) {
+	tag, err := c.conn.Exec(ctx, sql, args...)
+	if err != nil {
+		return 0, "", err
+	}
+
+	return tag.RowsAffected(), tag.String(), nil
+}
+
+// Query executes query expression and returns resulting Rows.
+func (c *PostgresConn) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	return c.conn.Query(ctx, sql, args...)
+}
+
 func (c *PostgresConn) Close() error {
 	return c.conn.Close(context.Background())
 }

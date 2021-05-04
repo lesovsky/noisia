@@ -22,5 +22,7 @@ type Tx interface {
 }
 
 type Conn interface {
+	Exec(ctx context.Context, sql string, arguments ...interface{}) (int64, string, error)
+	Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error)
 	Close() error
 }
