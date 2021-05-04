@@ -21,3 +21,19 @@ func TestWorkload_Run(t *testing.T) {
 
 	assert.NoError(t, noisia.Cleanup(context.Background(), config.PostgresConninfo))
 }
+
+func Test_createTempTable(t *testing.T) {
+	conn, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+
+	tbl, err := createTempTable(context.Background(), conn)
+	assert.NoError(t, err)
+	assert.Greater(t, len(tbl), 0)
+}
+
+func Test_newErrQuery(t *testing.T) {
+	for i := -1; i < 16; i++ {
+		q, _ := newErrQuery(i, "test")
+		assert.Greater(t, len(q), 0)
+	}
+}
