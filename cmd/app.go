@@ -21,7 +21,7 @@ type config struct {
 	doCleanup             bool
 	postgresConninfo      string
 	jobs                  uint16 // max 65535
-	duration              int
+	duration              time.Duration
 	idleXacts             bool
 	idleXactsNaptimeMin   int
 	idleXactsNaptimeMax   int
@@ -54,8 +54,7 @@ func runApplication(ctx context.Context, c *config, log zerolog.Logger) error {
 		return noisia.Cleanup(ctx, c.postgresConninfo)
 	}
 
-	timeout := time.Duration(c.duration) * time.Second
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, c.duration)
 	defer cancel()
 
 	var wg sync.WaitGroup
