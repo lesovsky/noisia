@@ -29,6 +29,7 @@ type config struct {
 	rollbacksMinRate      int
 	rollbacksMaxRate      int
 	waitXacts             bool
+	waitXactsFixture      bool
 	waitXactsLocktimeMin  int
 	waitXactsLocktimeMax  int
 	deadlocks             bool
@@ -145,6 +146,7 @@ func startWaitxactsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 	workload := waitxacts.NewWorkload(&waitxacts.Config{
 		PostgresConninfo:     c.postgresConninfo,
 		Jobs:                 c.jobs,
+		Fixture:              c.waitXactsFixture,
 		WaitXactsLocktimeMin: c.waitXactsLocktimeMin,
 		WaitXactsLocktimeMax: c.waitXactsLocktimeMax,
 	})

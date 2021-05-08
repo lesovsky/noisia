@@ -29,6 +29,7 @@ func main() {
 		rollbacksMinRate      = kingpin.Flag("rollbacks.min-rate", "Approximate minimum number of rollbacks per second (per worker)").Default("10").Envar("NOISIA_ROLLBACKS_MIN_RATE").Int()
 		rollbacksMaxRate      = kingpin.Flag("rollbacks.max-rate", "Approximate maximum number of rollbacks per second (per worker)").Default("10").Envar("NOISIA_ROLLBACKS_MAX_RATE").Int()
 		waitXacts             = kingpin.Flag("wait-xacts", "Run idle transactions workload").Default("false").Envar("NOISIA_IDLE_XACTS").Bool()
+		waitXactsFixture      = kingpin.Flag("wait-xacts.fixture", "Run workload using fixture table").Default("false").Envar("NOISIA_WAIT_XACTS_FIXTURE").Bool()
 		waitXactsLocktimeMin  = kingpin.Flag("wait-xacts.locktime-min", "Min transactions locking time, in seconds").Default("5").Envar("NOISIA_WAIT_XACTS_LOCKTIME_MIN").Int()
 		waitXactsLocktimeMax  = kingpin.Flag("wait-xacts.locktime-max", "Max transactions locking time, in seconds").Default("20").Envar("NOISIA_WAIT_XACTS_LOCKTIME_MAX").Int()
 		deadlocks             = kingpin.Flag("deadlocks", "Run deadlocks workload").Default("false").Envar("NOISIA_DEADLOCKS").Bool()
@@ -68,6 +69,7 @@ func main() {
 		rollbacksMinRate:      *rollbacksMinRate,
 		rollbacksMaxRate:      *rollbacksMaxRate,
 		waitXacts:             *waitXacts,
+		waitXactsFixture:      *waitXactsFixture,
 		waitXactsLocktimeMin:  *waitXactsLocktimeMin,
 		waitXactsLocktimeMax:  *waitXactsLocktimeMax,
 		deadlocks:             *deadlocks,

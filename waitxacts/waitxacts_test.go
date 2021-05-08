@@ -26,3 +26,17 @@ func TestWorkload_Run(t *testing.T) {
 
 	assert.NoError(t, noisia.Cleanup(context.Background(), config.PostgresConninfo))
 }
+
+func Test_selectRandomTable(t *testing.T) {
+	testcases := []struct {
+		tables []string
+		want   int
+	}{
+		{tables: []string{"test.test1", "test.test2", "test.test3"}, want: 10},
+		{tables: []string{}, want: 0},
+	}
+
+	for _, tc := range testcases {
+		assert.Equal(t, tc.want, len(selectRandomTable(tc.tables)))
+	}
+}
