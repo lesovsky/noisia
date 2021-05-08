@@ -111,7 +111,7 @@ func runApplication(ctx context.Context, c *config, log zerolog.Logger) error {
 func startIdleXactsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) {
 	defer wg.Done()
 
-	workload, err := idlexacts.NewWorkload(&idlexacts.Config{
+	workload, err := idlexacts.NewWorkload(idlexacts.Config{
 		PostgresConninfo:    c.postgresConninfo,
 		Jobs:                c.jobs,
 		IdleXactsNaptimeMin: c.idleXactsNaptimeMin,
@@ -131,7 +131,7 @@ func startIdleXactsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 func startRollbacksWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) {
 	defer wg.Done()
 
-	workload, err := rollbacks.NewWorkload(&rollbacks.Config{
+	workload, err := rollbacks.NewWorkload(rollbacks.Config{
 		PostgresConninfo: c.postgresConninfo,
 		Jobs:             c.jobs,
 		MinRate:          c.rollbacksMinRate,
@@ -151,7 +151,7 @@ func startRollbacksWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 func startWaitxactsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) {
 	defer wg.Done()
 
-	workload, err := waitxacts.NewWorkload(&waitxacts.Config{
+	workload, err := waitxacts.NewWorkload(waitxacts.Config{
 		PostgresConninfo:     c.postgresConninfo,
 		Jobs:                 c.jobs,
 		Fixture:              c.waitXactsFixture,
@@ -172,12 +172,16 @@ func startWaitxactsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 func startDeadlocksWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) {
 	defer wg.Done()
 
-	workload := deadlocks.NewWorkload(&deadlocks.Config{
+	workload, err := deadlocks.NewWorkload(deadlocks.Config{
 		PostgresConninfo: c.postgresConninfo,
 		Jobs:             c.jobs,
 	})
+	if err != nil {
+		fmt.Printf("deadlocks workload failed: %s", err)
+		return
+	}
 
-	err := workload.Run(ctx)
+	err = workload.Run(ctx)
 	if err != nil {
 		fmt.Printf("deadlocks workload failed: %s", err)
 	}
@@ -186,14 +190,18 @@ func startDeadlocksWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 func startTempFilesWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) {
 	defer wg.Done()
 
-	workload := tempfiles.NewWorkload(&tempfiles.Config{
+	workload, err := tempfiles.NewWorkload(tempfiles.Config{
 		PostgresConninfo:     c.postgresConninfo,
 		Jobs:                 c.jobs,
 		TempFilesRate:        c.tempFilesRate,
 		TempFilesScaleFactor: c.tempFilesScaleFactor,
 	})
+	if err != nil {
+		fmt.Printf("temp files workload failed: %s", err)
+		return
+	}
 
-	err := workload.Run(ctx)
+	err = workload.Run(ctx)
 	if err != nil {
 		fmt.Printf("temp files workload failed: %s", err)
 	}
@@ -202,7 +210,7 @@ func startTempFilesWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 func startTerminateWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) {
 	defer wg.Done()
 
-	workload := terminate.NewWorkload(&terminate.Config{
+	workload, err := terminate.NewWorkload(terminate.Config{
 		PostgresConninfo:     c.postgresConninfo,
 		TerminateInterval:    c.terminateInterval,
 		TerminateRate:        c.terminateRate,
@@ -213,8 +221,12 @@ func startTerminateWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 		Database:             c.terminateDatabase,
 		ApplicationName:      c.terminateAppName,
 	})
+	if err != nil {
+		fmt.Printf("terminate backends workload failed: %s", err)
+		return
+	}
 
-	err := workload.Run(ctx)
+	err = workload.Run(ctx)
 	if err != nil {
 		fmt.Printf("terminate backends workload failed: %s", err)
 	}
@@ -223,11 +235,15 @@ func startTerminateWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 func startFailconnsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) {
 	defer wg.Done()
 
-	workload := failconns.NewWorkload(&failconns.Config{
+	workload, err := failconns.NewWorkload(failconns.Config{
 		PostgresConninfo: c.postgresConninfo,
 	})
+	if err != nil {
+		fmt.Printf("failconns workload failed: %s", err)
+		return
+	}
 
-	err := workload.Run(ctx)
+	err = workload.Run(ctx)
 	if err != nil {
 		fmt.Printf("failconns workload failed: %s", err)
 	}

@@ -8,13 +8,6 @@ import (
 	"time"
 )
 
-const (
-	// defaultTerminateInterval defines default interval during which the number of backends should be terminated (or canceled).
-	defaultTerminateInterval = 1
-	// defaultTerminateRate defines default number of backend should be terminated per interval.
-	defaultTerminateRate = 1
-)
-
 // Config defines configuration settings for backends terminate workload.
 type Config struct {
 	// PostgresConninfo defines connections string used for connecting to Postgres.
@@ -37,24 +30,32 @@ type Config struct {
 	ApplicationName string
 }
 
-func (c *Config) defaults() {
-	if c.TerminateInterval == 0 {
-		c.TerminateInterval = defaultTerminateInterval
+// validate method checks workload configuration settings.
+func (c Config) validate() error {
+	if c.TerminateInterval < 1 {
+		return fmt.Errorf("terminate interval must be greater than zero")
 	}
-	if c.TerminateRate == 0 {
-		c.TerminateRate = defaultTerminateRate
+
+	if c.TerminateRate < 1 {
+		return fmt.Errorf("terminate rate must be greater than zero")
 	}
+
+	return nil
 }
 
 type workload struct {
-	config *Config
+	config Config
 	pool   db.DB
 }
 
 // NewWorkload creates a new workload with specified config.
-func NewWorkload(config *Config) noisia.Workload {
-	config.defaults()
-	return &workload{config, nil}
+func NewWorkload(config Config) (noisia.Workload, error) {
+	err := config.validate()
+	if err != nil {
+		return nil, err
+	}
+
+	return &workload{config, nil}, nil
 }
 
 // Run method connects to Postgres and starts the workload.
@@ -91,7 +92,7 @@ func (w *workload) signalProcess(ctx context.Context) {
 }
 
 // buildQuery creates cancel/terminate query depending on passed config.
-func buildQuery(c *Config) string {
+func buildQuery(c Config) string {
 	var signalFuncname, signalClientBackendsOnly, signalClientAddr, signalUser, signalDatabase, signalAppName string
 
 	if c.SoftMode {

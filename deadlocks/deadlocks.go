@@ -2,6 +2,7 @@ package deadlocks
 
 import (
 	"context"
+	"fmt"
 	"github.com/lesovsky/noisia"
 	"github.com/lesovsky/noisia/db"
 	"math/rand"
@@ -17,14 +18,29 @@ type Config struct {
 	Jobs uint16
 }
 
+// validate method checks workload configuration settings.
+func (c Config) validate() error {
+	if c.Jobs < 2 {
+		return fmt.Errorf("jobs must be greater than 1")
+	}
+
+	return nil
+}
+
+// workload implements noisia.Workload interface.
 type workload struct {
-	config *Config
+	config Config
 	pool   db.DB
 }
 
 // NewWorkload creates a new workload with specified config.
-func NewWorkload(config *Config) noisia.Workload {
-	return &workload{config, nil}
+func NewWorkload(config Config) (noisia.Workload, error) {
+	err := config.validate()
+	if err != nil {
+		return nil, err
+	}
+
+	return &workload{config, nil}, nil
 }
 
 // Run method connects to Postgres and starts the workload.

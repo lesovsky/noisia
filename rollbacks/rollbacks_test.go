@@ -30,7 +30,7 @@ func TestConfig_validate(t *testing.T) {
 }
 
 func TestWorkload_Run(t *testing.T) {
-	config := &Config{PostgresConninfo: db.TestConninfo, Jobs: 2, MinRate: 5, MaxRate: 10}
+	config := Config{PostgresConninfo: db.TestConninfo, Jobs: 2, MinRate: 5, MaxRate: 10}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

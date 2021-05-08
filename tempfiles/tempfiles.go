@@ -2,6 +2,7 @@ package tempfiles
 
 import (
 	"context"
+	"fmt"
 	"github.com/lesovsky/noisia"
 	"github.com/lesovsky/noisia/db"
 	"time"
@@ -28,15 +29,40 @@ type Config struct {
 	TempFilesScaleFactor int
 }
 
+// validate method checks workload configuration settings.
+func (c Config) validate() error {
+	if c.Jobs < 1 {
+		return fmt.Errorf("jobs must be greater than zero")
+	}
+
+	if c.TempFilesRate == 0 {
+		return fmt.Errorf("temp files rate must be greater than zero")
+	}
+
+	if c.TempFilesScaleFactor == 0 {
+		return fmt.Errorf("temp files rate must be greater than zero")
+	}
+
+	return nil
+}
+
+// workload implements noisia.Workload interface.
 type workload struct {
-	config *Config
+	config Config
 	pool   db.DB
 }
 
-func NewWorkload(config *Config) noisia.Workload {
-	return &workload{config, nil}
+// NewWorkload creates a new workload with specified config.
+func NewWorkload(config Config) (noisia.Workload, error) {
+	err := config.validate()
+	if err != nil {
+		return nil, err
+	}
+
+	return &workload{config, nil}, nil
 }
 
+// Run connects to Postgres and starts the workload.
 func (w *workload) Run(ctx context.Context) error {
 	pool, err := db.NewPostgresDB(ctx, w.config.PostgresConninfo)
 	if err != nil {

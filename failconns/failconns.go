@@ -7,28 +7,39 @@ import (
 	"time"
 )
 
-const (
-	// defaultConnInterval defines default interval between making new connection to Postgres
-	defaultConnInterval = 50 * time.Millisecond
-)
-
 // Config defines configuration settings for idle transactions workload.
 type Config struct {
 	// PostgresConninfo defines connections string used for connecting to Postgres.
 	PostgresConninfo string
 }
 
+// validate method checks workload configuration settings.
+func (c Config) validate() error {
+	// nothing to validate
+
+	return nil
+}
+
+// workload implements noisia.Workload interface.
 type workload struct {
-	config *Config
+	config Config
 }
 
 // NewWorkload creates a new workload with specified config.
-func NewWorkload(config *Config) noisia.Workload {
-	return &workload{config}
+func NewWorkload(config Config) (noisia.Workload, error) {
+	err := config.validate()
+	if err != nil {
+		return nil, err
+	}
+
+	return &workload{config}, nil
 }
 
 // Run method connects to Postgres and starts the workload.
 func (w *workload) Run(ctx context.Context) error {
+	// defaultConnInterval defines default interval between making new connection to Postgres
+	defaultConnInterval := 50 * time.Millisecond
+
 	conns := make([]db.Conn, 0, 1000)
 	interval := defaultConnInterval
 	timer := time.NewTimer(interval)

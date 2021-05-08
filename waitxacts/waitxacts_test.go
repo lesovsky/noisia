@@ -30,7 +30,7 @@ func TestConfig_validate(t *testing.T) {
 }
 
 func TestWorkload_Run(t *testing.T) {
-	config := &Config{
+	config := Config{
 		PostgresConninfo:     db.TestConninfo,
 		Jobs:                 2,
 		WaitXactsLocktimeMin: 1,

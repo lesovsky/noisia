@@ -43,12 +43,12 @@ func (c Config) validate() error {
 
 // workload implements noisia.Workload interface.
 type workload struct {
-	config *Config
+	config Config
 	pool   db.DB
 }
 
 // NewWorkload creates a new workload with specified config.
-func NewWorkload(config *Config) (noisia.Workload, error) {
+func NewWorkload(config Config) (noisia.Workload, error) {
 	err := config.validate()
 	if err != nil {
 		return nil, err
