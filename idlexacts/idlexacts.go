@@ -68,6 +68,8 @@ func (w *workload) Run(ctx context.Context) error {
 		return err
 	}
 
+	// TODO: что если база пустая и нет таблиц?
+
 	return startLoop(ctx, pool, tables, w.config.Jobs, w.config.IdleXactsNaptimeMin, w.config.IdleXactsNaptimeMax)
 }
 
@@ -82,9 +84,6 @@ func startLoop(ctx context.Context, pool db.DB, tables []string, jobs uint16, mi
 		// Run workers only when it's possible to write into channel (channel is limited by number of jobs).
 		case guard <- struct{}{}:
 			go func() {
-				if len(tables) > 0 {
-
-				}
 				table := selectRandomTable(tables)
 				naptime := time.Duration(rand.Intn(maxTime-minTime)+minTime) * time.Second
 
