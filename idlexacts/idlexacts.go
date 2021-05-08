@@ -78,14 +78,13 @@ func (w *workload) Run(ctx context.Context) error {
 
 // startLoop starts workload using passed settings and database connection.
 func startLoop(ctx context.Context, pool db.DB, tables []string, jobs uint16, minTime, maxTime time.Duration) error {
-	// While running, keep required number of workers using channel.
-	// Run new workers only until there is any free slot.
-
 	rand.Seed(time.Now().UnixNano())
 
 	// Increment maxTime up to 1 due to rand.Int63n() never return max value.
 	maxTime++
 
+	// While running, keep required number of workers using channel.
+	// Run new workers only until there is any free slot.
 	guard := make(chan struct{}, jobs)
 	for {
 		select {
