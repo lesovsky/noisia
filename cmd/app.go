@@ -190,8 +190,8 @@ func startTerminateWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 
 	workload := terminate.NewWorkload(&terminate.Config{
 		PostgresConninfo:     c.postgresConninfo,
-		TerminateInterval:    c.tempFilesRate,
-		TerminateRate:        c.tempFilesScaleFactor,
+		TerminateInterval:    c.terminateInterval,
+		TerminateRate:        c.terminateRate,
 		SoftMode:             c.terminateSoftMode,
 		IgnoreSystemBackends: c.terminateIgnoreSystem,
 		ClientAddr:           c.terminateClientAddr,
