@@ -73,8 +73,6 @@ func (w *workload) Run(ctx context.Context) error {
 		return err
 	}
 
-	// TODO: что если база пустая и нет таблиц?
-
 	// Increment NaptimeMax up to 1 second due to rand.Intn() never return max value.
 	return startLoop(ctx, pool, tables, w.config.Jobs, w.config.NaptimeMin, w.config.NaptimeMax+1)
 }
