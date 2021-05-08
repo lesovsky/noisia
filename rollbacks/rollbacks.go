@@ -17,9 +17,9 @@ type Config struct {
 	// Jobs defines how many workers should be created for producing rollbacks.
 	Jobs uint16
 	// MinRate defines minimum approximate target rate for produced rollbacks per second (per single worker).
-	MinRate int
+	MinRate uint16
 	// MaxRate defines maximum approximate target rate for produced rollbacks per second (per single worker).
-	MaxRate int
+	MaxRate uint16
 }
 
 // validate method checks workload configuration settings.
@@ -28,7 +28,7 @@ func (c Config) validate() error {
 		return fmt.Errorf("jobs must be greater than zero")
 	}
 
-	if c.MinRate == 0 && c.MaxRate == 0 {
+	if c.MinRate == 0 || c.MaxRate == 0 {
 		return fmt.Errorf("min and max rate must be greater than zero")
 	}
 
@@ -56,6 +56,7 @@ func NewWorkload(config Config) (noisia.Workload, error) {
 
 // Run method connects to Postgres and starts the workload.
 func (w *workload) Run(ctx context.Context) error {
+	fmt.Println(w.config.MinRate, w.config.MaxRate)
 	var wg sync.WaitGroup
 
 	for i := 0; i < int(w.config.Jobs); i++ {
@@ -84,7 +85,7 @@ func (w *workload) Run(ctx context.Context) error {
 }
 
 // startLoop start workload loop until context timeout exceeded.
-func startLoop(ctx context.Context, conn db.Conn, minRate, maxRate int) (int, int, error) {
+func startLoop(ctx context.Context, conn db.Conn, minRate, maxRate uint16) (int, int, error) {
 	table, err := createTempTable(ctx, conn)
 	if err != nil {
 		return 0, 0, err
@@ -111,7 +112,7 @@ func startLoop(ctx context.Context, conn db.Conn, minRate, maxRate int) (int, in
 		// as calculation/executing overhead.
 		var interval int64
 		if minRate != maxRate {
-			interval = 900000000 / int64(rand.Intn(maxRate-minRate)+minRate)
+			interval = 900000000 / int64(rand.Intn(int(maxRate-minRate))+int(minRate))
 		} else {
 			interval = 900000000 / int64(minRate)
 		}

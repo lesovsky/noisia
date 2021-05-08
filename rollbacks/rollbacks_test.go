@@ -17,6 +17,8 @@ func TestConfig_validate(t *testing.T) {
 		{valid: true, config: Config{Jobs: 1, MinRate: 5, MaxRate: 10}},
 		{valid: false, config: Config{Jobs: 0}},
 		{valid: false, config: Config{Jobs: 1, MinRate: 5, MaxRate: 4}},
+		{valid: false, config: Config{Jobs: 1, MinRate: 0, MaxRate: 5}},
+		{valid: false, config: Config{Jobs: 1, MinRate: 5, MaxRate: 0}},
 		{valid: false, config: Config{Jobs: 1, MinRate: 0, MaxRate: 0}},
 	}
 

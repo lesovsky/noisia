@@ -26,8 +26,8 @@ type config struct {
 	idleXactsNaptimeMin   time.Duration
 	idleXactsNaptimeMax   time.Duration
 	rollbacks             bool
-	rollbacksMinRate      int
-	rollbacksMaxRate      int
+	rollbacksMinRate      uint16
+	rollbacksMaxRate      uint16
 	waitXacts             bool
 	waitXactsFixture      bool
 	waitXactsLocktimeMin  int
