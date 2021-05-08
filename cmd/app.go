@@ -34,8 +34,8 @@ type config struct {
 	waitXactsLocktimeMax  int
 	deadlocks             bool
 	tempFiles             bool
-	tempFilesRate         int
-	tempFilesScaleFactor  int
+	tempFilesRate         uint16
+	tempFilesScaleFactor  uint16
 	terminate             bool
 	terminateInterval     int
 	terminateRate         int

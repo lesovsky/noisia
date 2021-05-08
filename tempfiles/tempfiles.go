@@ -24,9 +24,9 @@ type Config struct {
 	// Jobs defines how many workers should be created for producing temp files.
 	Jobs uint16
 	// Rate defines rate interval for queries executing.
-	Rate int
+	Rate uint16
 	// ScaleFactor defines multiplier for amount of fixtures in temporary table.
-	ScaleFactor int
+	ScaleFactor uint16
 }
 
 // validate method checks workload configuration settings.
