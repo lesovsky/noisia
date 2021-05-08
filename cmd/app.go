@@ -37,8 +37,8 @@ type config struct {
 	tempFilesRate         uint16
 	tempFilesScaleFactor  uint16
 	terminate             bool
-	terminateInterval     int
-	terminateRate         int
+	terminateInterval     uint16
+	terminateRate         uint16
 	terminateSoftMode     bool
 	terminateIgnoreSystem bool
 	terminateClientAddr   string

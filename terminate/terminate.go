@@ -13,9 +13,9 @@ type Config struct {
 	// Conninfo defines connections string used for connecting to Postgres.
 	Conninfo string
 	// Interval defines a single round in seconds during which the number of backends/queries should be terminated (accordingly to rate).
-	Interval int
+	Interval uint16
 	// Rate defines a rate of how many backends should be terminated (or queries canceled) per interval.
-	Rate int
+	Rate uint16
 	// SoftMode defines to use pg_cancel_backend() instead of pg_terminate_backend().
 	SoftMode bool
 	// IgnoreSystemBackends controls whether system background process should be terminated or not.
@@ -68,7 +68,7 @@ func (w *workload) Run(ctx context.Context) error {
 	defer w.pool.Close()
 
 	// calculate inter-query interval for rate throttling
-	interval := time.Duration(1000000000*w.config.Interval/w.config.Rate) * time.Nanosecond
+	interval := time.Duration(1000000000*int64(w.config.Interval)/int64(w.config.Rate)) * time.Nanosecond
 	timer := time.NewTimer(interval)
 
 	for {
