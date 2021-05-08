@@ -28,7 +28,7 @@ func (c Config) validate() error {
 		return fmt.Errorf("jobs must be greater than zero")
 	}
 
-	if c.NaptimeMin == 0 && c.NaptimeMax == 0 {
+	if c.NaptimeMin == 0 || c.NaptimeMax == 0 {
 		return fmt.Errorf("min and max idle time must be greater than zero")
 	}
 

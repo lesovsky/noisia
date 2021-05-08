@@ -18,6 +18,8 @@ func TestConfig_validate(t *testing.T) {
 		{valid: true, config: Config{Jobs: 1, NaptimeMin: 5 * time.Second, NaptimeMax: 5 * time.Second}},
 		{valid: false, config: Config{Jobs: 0}},
 		{valid: false, config: Config{Jobs: 1, NaptimeMin: 5 * time.Second, NaptimeMax: 4 * time.Second}},
+		{valid: false, config: Config{Jobs: 1, NaptimeMin: 5 * time.Second, NaptimeMax: 0}},
+		{valid: false, config: Config{Jobs: 1, NaptimeMin: 0, NaptimeMax: 5 * time.Second}},
 		{valid: false, config: Config{Jobs: 1, NaptimeMin: 0, NaptimeMax: 0}},
 	}
 
