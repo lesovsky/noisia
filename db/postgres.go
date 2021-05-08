@@ -53,7 +53,7 @@ func (db *PostgresDB) Query(ctx context.Context, sql string, args ...interface{}
 
 // Close closes database connections pool.
 func (db *PostgresDB) Close() {
-	return
+	db.pool.Close()
 }
 
 /* Transaction implementation */

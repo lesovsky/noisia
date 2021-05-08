@@ -64,10 +64,9 @@ func (w *workload) Run(ctx context.Context) error {
 		// Start working loop.
 		wg.Add(1)
 		go func() {
-			_, _, err = startLoop(ctx, conn, w.config.MinRate, w.config.MaxRate)
-			if err != nil {
-				// TODO: expose errors outside
-			}
+			_, _, _ = startLoop(ctx, conn, w.config.MinRate, w.config.MaxRate)
+			// TODO: expose errors outside if any
+
 			_ = conn.Close()
 			wg.Done()
 		}()
