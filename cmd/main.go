@@ -40,6 +40,10 @@ func main() {
 		terminateInterval     = kingpin.Flag("terminate.interval", "Time interval of single round, in seconds").Default("1").Envar("NOISIA_TERMINATE_INTERVAL").Int()
 		terminateSoftMode     = kingpin.Flag("terminate.soft-mode", "Use queries cancel mode").Default("false").Envar("NOISIA_TERMINATE_SOFT_MODE").Bool()
 		terminateIgnoreSystem = kingpin.Flag("terminate.ignore-system", "Ignore postgres system processes").Default("false").Envar("NOISIA_TERMINATE_IGNORE_SYSTEM").Bool()
+		terminateClientAddr   = kingpin.Flag("terminate.client-addr", "Terminate backends created from specific client addresses").Default("").Envar("NOISIA_TERMINATE_CLIENT_ADDR").String()
+		terminateUser         = kingpin.Flag("terminate.user", "Terminate backends handled by specific user").Default("").Envar("NOISIA_TERMINATE_USER").String()
+		terminateDatabase     = kingpin.Flag("terminate.database", "Terminate backends connected to specific database").Default("").Envar("NOISIA_TERMINATE_DATABASE").String()
+		terminateAppName      = kingpin.Flag("terminate.appname", "Terminate backends created from specific applications").Default("").Envar("NOISIA_TERMINATE_APPNAME").String()
 		failconns             = kingpin.Flag("failconns", "Run connections exhaustion workload").Default("false").Envar("NOISIA_FAILCONNS").Bool()
 	)
 	kingpin.Parse()
@@ -75,6 +79,10 @@ func main() {
 		terminateInterval:     *terminateInterval,
 		terminateSoftMode:     *terminateSoftMode,
 		terminateIgnoreSystem: *terminateIgnoreSystem,
+		terminateClientAddr:   *terminateClientAddr,
+		terminateUser:         *terminateUser,
+		terminateDatabase:     *terminateDatabase,
+		terminateAppName:      *terminateAppName,
 		failconns:             *failconns,
 	}
 

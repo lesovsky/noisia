@@ -27,6 +27,14 @@ type Config struct {
 	SoftMode bool
 	// IgnoreSystemBackends controls whether system background process should be terminated or not.
 	IgnoreSystemBackends bool
+	// ClientAddr defines pattern applied to pg_stat_activity.client_addr
+	ClientAddr string
+	// User defines pattern applied to pg_stat_activity.usename
+	User string
+	// Database defines pattern applied to pg_stat_activity.datname
+	Database string
+	// ApplicationName defines patter applied to pg_stat_activity.application_name
+	ApplicationName string
 }
 
 func (c *Config) defaults() {
@@ -74,22 +82,51 @@ func (w *workload) Run(ctx context.Context) error {
 	}
 }
 
+// signalProcess sends cancel/terminate query to Postgres.
 func (w *workload) signalProcess(ctx context.Context) {
-	// Don't care about errors
-	var signalFuncname, signalClientBackendsOnly string
+	q := buildQuery(w.config)
 
-	if w.config.SoftMode {
+	// Don't care about errors
+	_, _, _ = w.pool.Exec(ctx, q)
+}
+
+// buildQuery creates cancel/terminate query depending on passed config.
+func buildQuery(c *Config) string {
+	var signalFuncname, signalClientBackendsOnly, signalClientAddr, signalUser, signalDatabase, signalAppName string
+
+	if c.SoftMode {
 		signalFuncname = "pg_cancel_backend(pid)"
 	} else {
 		signalFuncname = "pg_terminate_backend(pid)"
 	}
 
-	if w.config.IgnoreSystemBackends {
-		signalClientBackendsOnly = "AND backend_type = 'client backend'"
+	if c.IgnoreSystemBackends {
+		signalClientBackendsOnly = "AND backend_type = 'client backend' "
 	}
 
-	_, _, _ = w.pool.Exec(
-		ctx,
-		fmt.Sprintf("SELECT %s FROM pg_stat_activity WHERE pid <> pg_backend_pid() %s ORDER BY random() LIMIT 1", signalFuncname, signalClientBackendsOnly),
+	if c.ClientAddr != "" {
+		signalClientAddr = fmt.Sprintf("AND client_addr::text ~ '%s' ", c.ClientAddr)
+	}
+
+	if c.User != "" {
+		signalUser = fmt.Sprintf("AND usename ~ '%s' ", c.User)
+	}
+
+	if c.Database != "" {
+		signalDatabase = fmt.Sprintf("AND datname ~ '%s' ", c.Database)
+	}
+
+	if c.ApplicationName != "" {
+		signalAppName = fmt.Sprintf("AND application_name ~ '%s' ", c.ApplicationName)
+	}
+
+	return fmt.Sprintf(
+		"SELECT %s FROM pg_stat_activity WHERE pid <> pg_backend_pid() %s%s%s%s%sORDER BY random() LIMIT 1",
+		signalFuncname,
+		signalClientBackendsOnly,
+		signalClientAddr,
+		signalUser,
+		signalDatabase,
+		signalAppName,
 	)
 }

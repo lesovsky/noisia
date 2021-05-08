@@ -40,6 +40,10 @@ type config struct {
 	terminateRate         int
 	terminateSoftMode     bool
 	terminateIgnoreSystem bool
+	terminateClientAddr   string
+	terminateUser         string
+	terminateDatabase     string
+	terminateAppName      string
 	failconns             bool
 }
 
@@ -190,6 +194,10 @@ func startTerminateWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 		TerminateRate:        c.tempFilesScaleFactor,
 		SoftMode:             c.terminateSoftMode,
 		IgnoreSystemBackends: c.terminateIgnoreSystem,
+		ClientAddr:           c.terminateClientAddr,
+		User:                 c.terminateUser,
+		Database:             c.terminateDatabase,
+		ApplicationName:      c.terminateAppName,
 	})
 
 	err := workload.Run(ctx)
