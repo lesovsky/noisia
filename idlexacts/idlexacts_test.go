@@ -14,10 +14,10 @@ func TestConfig_validate(t *testing.T) {
 		valid  bool
 		config Config
 	}{
-		{valid: true, config: Config{Jobs: 1, IdleXactsNaptimeMin: 5, IdleXactsNaptimeMax: 10}},
+		{valid: true, config: Config{Jobs: 1, NaptimeMin: 5, NaptimeMax: 10}},
 		{valid: false, config: Config{Jobs: 0}},
-		{valid: false, config: Config{Jobs: 1, IdleXactsNaptimeMin: 5, IdleXactsNaptimeMax: 4}},
-		{valid: false, config: Config{Jobs: 1, IdleXactsNaptimeMin: 0, IdleXactsNaptimeMax: 0}},
+		{valid: false, config: Config{Jobs: 1, NaptimeMin: 5, NaptimeMax: 4}},
+		{valid: false, config: Config{Jobs: 1, NaptimeMin: 0, NaptimeMax: 0}},
 	}
 
 	for _, tc := range testcases {
@@ -31,10 +31,10 @@ func TestConfig_validate(t *testing.T) {
 
 func TestWorkload_Run(t *testing.T) {
 	config := Config{
-		PostgresConninfo:    db.TestConninfo,
-		Jobs:                2,
-		IdleXactsNaptimeMin: 1,
-		IdleXactsNaptimeMax: 2,
+		Conninfo:   db.TestConninfo,
+		Jobs:       2,
+		NaptimeMin: 1,
+		NaptimeMax: 2,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -45,10 +45,10 @@ func TestWorkload_Run(t *testing.T) {
 	err = w.Run(ctx)
 	assert.NoError(t, err)
 
-	assert.NoError(t, noisia.Cleanup(context.Background(), config.PostgresConninfo))
+	assert.NoError(t, noisia.Cleanup(context.Background(), config.Conninfo))
 
 	// Connect to invalid DB
-	config.PostgresConninfo = "database=noisia_invalid"
+	config.Conninfo = "database=noisia_invalid"
 	err = w.Run(ctx)
 	assert.Error(t, err)
 }

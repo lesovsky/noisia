@@ -14,9 +14,9 @@ func TestConfig_validate(t *testing.T) {
 		valid  bool
 		config Config
 	}{
-		{valid: true, config: Config{TerminateInterval: 1, TerminateRate: 1}},
-		{valid: false, config: Config{TerminateInterval: 0, TerminateRate: 1}},
-		{valid: false, config: Config{TerminateInterval: 1, TerminateRate: 0}},
+		{valid: true, config: Config{Interval: 1, Rate: 1}},
+		{valid: false, config: Config{Interval: 0, Rate: 1}},
+		{valid: false, config: Config{Interval: 1, Rate: 0}},
 	}
 
 	for _, tc := range testcases {
@@ -30,9 +30,9 @@ func TestConfig_validate(t *testing.T) {
 
 func TestWorkload_Run(t *testing.T) {
 	config := Config{
-		PostgresConninfo:     db.TestConninfo,
-		TerminateRate:        4,
-		TerminateInterval:    1,
+		Conninfo:             db.TestConninfo,
+		Rate:                 4,
+		Interval:             1,
 		IgnoreSystemBackends: true,
 		SoftMode:             false,
 	}
@@ -45,7 +45,7 @@ func TestWorkload_Run(t *testing.T) {
 	err = w.Run(ctx)
 	assert.Nil(t, err)
 
-	assert.NoError(t, noisia.Cleanup(context.Background(), config.PostgresConninfo))
+	assert.NoError(t, noisia.Cleanup(context.Background(), config.Conninfo))
 }
 
 func Test_buildQuery(t *testing.T) {

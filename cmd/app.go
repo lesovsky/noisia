@@ -112,10 +112,10 @@ func startIdleXactsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 	defer wg.Done()
 
 	workload, err := idlexacts.NewWorkload(idlexacts.Config{
-		PostgresConninfo:    c.postgresConninfo,
-		Jobs:                c.jobs,
-		IdleXactsNaptimeMin: c.idleXactsNaptimeMin,
-		IdleXactsNaptimeMax: c.idleXactsNaptimeMax,
+		Conninfo:   c.postgresConninfo,
+		Jobs:       c.jobs,
+		NaptimeMin: c.idleXactsNaptimeMin,
+		NaptimeMax: c.idleXactsNaptimeMax,
 	})
 	if err != nil {
 		fmt.Printf("idle transactions workload failed: %s\n", err)
@@ -132,10 +132,10 @@ func startRollbacksWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 	defer wg.Done()
 
 	workload, err := rollbacks.NewWorkload(rollbacks.Config{
-		PostgresConninfo: c.postgresConninfo,
-		Jobs:             c.jobs,
-		MinRate:          c.rollbacksMinRate,
-		MaxRate:          c.rollbacksMaxRate,
+		Conninfo: c.postgresConninfo,
+		Jobs:     c.jobs,
+		MinRate:  c.rollbacksMinRate,
+		MaxRate:  c.rollbacksMaxRate,
 	})
 	if err != nil {
 		fmt.Printf("rollbacks workload failed: %s\n", err)
@@ -152,11 +152,11 @@ func startWaitxactsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 	defer wg.Done()
 
 	workload, err := waitxacts.NewWorkload(waitxacts.Config{
-		PostgresConninfo:     c.postgresConninfo,
-		Jobs:                 c.jobs,
-		Fixture:              c.waitXactsFixture,
-		WaitXactsLocktimeMin: c.waitXactsLocktimeMin,
-		WaitXactsLocktimeMax: c.waitXactsLocktimeMax,
+		Conninfo:    c.postgresConninfo,
+		Jobs:        c.jobs,
+		Fixture:     c.waitXactsFixture,
+		LocktimeMin: c.waitXactsLocktimeMin,
+		LocktimeMax: c.waitXactsLocktimeMax,
 	})
 	if err != nil {
 		fmt.Printf("waiting xacts workload failed: %s\n", err)
@@ -173,8 +173,8 @@ func startDeadlocksWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 	defer wg.Done()
 
 	workload, err := deadlocks.NewWorkload(deadlocks.Config{
-		PostgresConninfo: c.postgresConninfo,
-		Jobs:             c.jobs,
+		Conninfo: c.postgresConninfo,
+		Jobs:     c.jobs,
 	})
 	if err != nil {
 		fmt.Printf("deadlocks workload failed: %s\n", err)
@@ -191,10 +191,10 @@ func startTempFilesWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 	defer wg.Done()
 
 	workload, err := tempfiles.NewWorkload(tempfiles.Config{
-		PostgresConninfo:     c.postgresConninfo,
-		Jobs:                 c.jobs,
-		TempFilesRate:        c.tempFilesRate,
-		TempFilesScaleFactor: c.tempFilesScaleFactor,
+		Conninfo:    c.postgresConninfo,
+		Jobs:        c.jobs,
+		Rate:        c.tempFilesRate,
+		ScaleFactor: c.tempFilesScaleFactor,
 	})
 	if err != nil {
 		fmt.Printf("temp files workload failed: %s\n", err)
@@ -211,9 +211,9 @@ func startTerminateWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 	defer wg.Done()
 
 	workload, err := terminate.NewWorkload(terminate.Config{
-		PostgresConninfo:     c.postgresConninfo,
-		TerminateInterval:    c.terminateInterval,
-		TerminateRate:        c.terminateRate,
+		Conninfo:             c.postgresConninfo,
+		Interval:             c.terminateInterval,
+		Rate:                 c.terminateRate,
 		SoftMode:             c.terminateSoftMode,
 		IgnoreSystemBackends: c.terminateIgnoreSystem,
 		ClientAddr:           c.terminateClientAddr,
@@ -236,7 +236,7 @@ func startFailconnsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 	defer wg.Done()
 
 	workload, err := failconns.NewWorkload(failconns.Config{
-		PostgresConninfo: c.postgresConninfo,
+		Conninfo: c.postgresConninfo,
 	})
 	if err != nil {
 		fmt.Printf("failconns workload failed: %s\n", err)

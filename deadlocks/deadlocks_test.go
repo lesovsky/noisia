@@ -29,8 +29,8 @@ func TestConfig_validate(t *testing.T) {
 
 func TestWorkload_Run(t *testing.T) {
 	config := Config{
-		PostgresConninfo: db.TestConninfo,
-		Jobs:             2,
+		Conninfo: db.TestConninfo,
+		Jobs:     2,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -41,5 +41,5 @@ func TestWorkload_Run(t *testing.T) {
 	err = w.Run(ctx)
 	assert.NoError(t, err)
 
-	assert.NoError(t, noisia.Cleanup(context.Background(), config.PostgresConninfo))
+	assert.NoError(t, noisia.Cleanup(context.Background(), config.Conninfo))
 }

@@ -12,14 +12,14 @@ import (
 
 // Config defines configuration settings for idle transactions workload.
 type Config struct {
-	// PostgresConninfo defines connections string used for connecting to Postgres.
-	PostgresConninfo string
+	// Conninfo defines connections string used for connecting to Postgres.
+	Conninfo string
 	// Jobs defines how many concurrent idle transactions should be running during workload.
 	Jobs uint16
-	// IdleXactsNaptimeMin defines lower threshold when transactions can idle.
-	IdleXactsNaptimeMin int
-	// IdleXactsNaptimeMax defines upper threshold when transactions can idle.
-	IdleXactsNaptimeMax int
+	// NaptimeMin defines lower threshold when transactions can idle.
+	NaptimeMin int
+	// NaptimeMax defines upper threshold when transactions can idle.
+	NaptimeMax int
 }
 
 // validate method checks workload configuration settings.
@@ -28,11 +28,11 @@ func (c Config) validate() error {
 		return fmt.Errorf("jobs must be greater than zero")
 	}
 
-	if c.IdleXactsNaptimeMin == 0 && c.IdleXactsNaptimeMax == 0 {
+	if c.NaptimeMin == 0 && c.NaptimeMax == 0 {
 		return fmt.Errorf("min and max idle time must be greater than zero")
 	}
 
-	if c.IdleXactsNaptimeMin > c.IdleXactsNaptimeMax {
+	if c.NaptimeMin > c.NaptimeMax {
 		return fmt.Errorf("min naptime must be less or equal to naptime max")
 	}
 
@@ -58,7 +58,7 @@ func (w *workload) Run(ctx context.Context) error {
 	// maxAffectedTables defines max number of tables which will be affected by idle transactions.
 	maxAffectedTables := 3
 
-	pool, err := db.NewPostgresDB(ctx, w.config.PostgresConninfo)
+	pool, err := db.NewPostgresDB(ctx, w.config.Conninfo)
 	if err != nil {
 		return err
 	}
@@ -76,7 +76,7 @@ func (w *workload) Run(ctx context.Context) error {
 	// TODO: что если база пустая и нет таблиц?
 
 	// Increment NaptimeMax up to 1 second due to rand.Intn() never return max value.
-	return startLoop(ctx, pool, tables, w.config.Jobs, w.config.IdleXactsNaptimeMin, w.config.IdleXactsNaptimeMax+1)
+	return startLoop(ctx, pool, tables, w.config.Jobs, w.config.NaptimeMin, w.config.NaptimeMax+1)
 }
 
 // startLoop starts workload using passed settings and database connection.

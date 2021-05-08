@@ -12,8 +12,8 @@ import (
 
 // Config defines configuration settings for deadlocks workload.
 type Config struct {
-	// PostgresConninfo defines connections string used for connecting to Postgres.
-	PostgresConninfo string
+	// Conninfo defines connections string used for connecting to Postgres.
+	Conninfo string
 	// Jobs defines how many workers should be created for producing deadlocks.
 	Jobs uint16
 }
@@ -45,7 +45,7 @@ func NewWorkload(config Config) (noisia.Workload, error) {
 
 // Run method connects to Postgres and starts the workload.
 func (w *workload) Run(ctx context.Context) error {
-	pool, err := db.NewPostgresDB(ctx, w.config.PostgresConninfo)
+	pool, err := db.NewPostgresDB(ctx, w.config.Conninfo)
 	if err != nil {
 		return err
 	}

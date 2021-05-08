@@ -12,16 +12,16 @@ import (
 
 // Config defines configuration settings for waiting transactions workload
 type Config struct {
-	// PostgresConninfo defines connections string used for connecting to Postgres.
-	PostgresConninfo string
+	// Conninfo defines connections string used for connecting to Postgres.
+	Conninfo string
 	// Jobs defines how many workers should be created for producing waiting transactions.
 	Jobs uint16
 	// Fixture defines to run fixture test which is not affect already running workload.
 	Fixture bool
-	// waitXactsLocktimeMin defines a lower threshold of locking interval for blocking transactions.
-	WaitXactsLocktimeMin int
-	// waitXactsLocktimeMax defines an upper threshold of locking interval for blocking transactions.
-	WaitXactsLocktimeMax int
+	// LocktimeMin defines a lower threshold of locking interval for blocking transactions.
+	LocktimeMin int
+	// LocktimeMax defines an upper threshold of locking interval for blocking transactions.
+	LocktimeMax int
 }
 
 // validate method checks workload configuration settings.
@@ -30,11 +30,11 @@ func (c Config) validate() error {
 		return fmt.Errorf("jobs must be greater than 1")
 	}
 
-	if c.WaitXactsLocktimeMin == 0 && c.WaitXactsLocktimeMax == 0 {
+	if c.LocktimeMin == 0 && c.LocktimeMax == 0 {
 		return fmt.Errorf("min and max lock time must be greater than zero")
 	}
 
-	if c.WaitXactsLocktimeMin > c.WaitXactsLocktimeMax {
+	if c.LocktimeMin > c.LocktimeMax {
 		return fmt.Errorf("min lock time must be less or equal to max lock time")
 	}
 
@@ -62,7 +62,7 @@ func (w *workload) Run(ctx context.Context) error {
 	// maxAffectedTables defines max number of tables which will be affected by blocking transactions.
 	maxAffectedTables := 3
 
-	pool, err := db.NewPostgresDB(ctx, w.config.PostgresConninfo)
+	pool, err := db.NewPostgresDB(ctx, w.config.Conninfo)
 	if err != nil {
 		return err
 	}
@@ -89,7 +89,7 @@ func (w *workload) Run(ctx context.Context) error {
 	}
 
 	// Increment NaptimeMax up to 1 second due to rand.Intn() never return max value.
-	return startLoop(ctx, pool, tables, w.config.Jobs, w.config.WaitXactsLocktimeMin, w.config.WaitXactsLocktimeMax+1)
+	return startLoop(ctx, pool, tables, w.config.Jobs, w.config.LocktimeMin, w.config.LocktimeMax+1)
 }
 
 // prepare method creates fixture table for workload.

@@ -19,14 +19,14 @@ random()::text,random()::text,random()::text,random()::text,random()::text,rando
 
 // Config defines configuration settings for temp files workload
 type Config struct {
-	// PostgresConninfo defines connections string used for connecting to Postgres.
-	PostgresConninfo string
+	// Conninfo defines connections string used for connecting to Postgres.
+	Conninfo string
 	// Jobs defines how many workers should be created for producing temp files.
 	Jobs uint16
-	// TempFilesRate defines rate interval for queries executing.
-	TempFilesRate int
-	// TempFilesScaleFactor defines multiplier for amount of fixtures in temporary table.
-	TempFilesScaleFactor int
+	// Rate defines rate interval for queries executing.
+	Rate int
+	// ScaleFactor defines multiplier for amount of fixtures in temporary table.
+	ScaleFactor int
 }
 
 // validate method checks workload configuration settings.
@@ -35,11 +35,11 @@ func (c Config) validate() error {
 		return fmt.Errorf("jobs must be greater than zero")
 	}
 
-	if c.TempFilesRate == 0 {
+	if c.Rate == 0 {
 		return fmt.Errorf("temp files rate must be greater than zero")
 	}
 
-	if c.TempFilesScaleFactor == 0 {
+	if c.ScaleFactor == 0 {
 		return fmt.Errorf("temp files rate must be greater than zero")
 	}
 
@@ -64,7 +64,7 @@ func NewWorkload(config Config) (noisia.Workload, error) {
 
 // Run connects to Postgres and starts the workload.
 func (w *workload) Run(ctx context.Context) error {
-	pool, err := db.NewPostgresDB(ctx, w.config.PostgresConninfo)
+	pool, err := db.NewPostgresDB(ctx, w.config.Conninfo)
 	if err != nil {
 		return err
 	}
@@ -80,7 +80,7 @@ func (w *workload) Run(ctx context.Context) error {
 	defer func() { _ = w.cleanup(ctx) }()
 
 	// calculate inter-query interval for rate throttling
-	interval := 1000000000 / int64(w.config.TempFilesRate)
+	interval := 1000000000 / int64(w.config.Rate)
 
 	// keep specified number of workers using channel - run new workers until there is any free slot
 	guard := make(chan struct{}, w.config.Jobs)
@@ -107,7 +107,7 @@ func (w *workload) prepare(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	_, _, err = w.pool.Exec(ctx, queryLoadData, 1000*w.config.TempFilesScaleFactor)
+	_, _, err = w.pool.Exec(ctx, queryLoadData, 1000*w.config.ScaleFactor)
 	if err != nil {
 		return err
 	}

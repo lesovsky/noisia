@@ -14,10 +14,10 @@ func TestConfig_validate(t *testing.T) {
 		valid  bool
 		config Config
 	}{
-		{valid: true, config: Config{Jobs: 1, TempFilesRate: 5, TempFilesScaleFactor: 5}},
+		{valid: true, config: Config{Jobs: 1, Rate: 5, ScaleFactor: 5}},
 		{valid: false, config: Config{Jobs: 0}},
-		{valid: false, config: Config{Jobs: 1, TempFilesRate: 0, TempFilesScaleFactor: 5}},
-		{valid: false, config: Config{Jobs: 1, TempFilesRate: 5, TempFilesScaleFactor: 0}},
+		{valid: false, config: Config{Jobs: 1, Rate: 0, ScaleFactor: 5}},
+		{valid: false, config: Config{Jobs: 1, Rate: 5, ScaleFactor: 0}},
 	}
 
 	for _, tc := range testcases {
@@ -31,10 +31,10 @@ func TestConfig_validate(t *testing.T) {
 
 func TestWorkload_Run(t *testing.T) {
 	config := Config{
-		PostgresConninfo:     db.TestConninfo,
-		Jobs:                 2,
-		TempFilesRate:        2,
-		TempFilesScaleFactor: 10,
+		Conninfo:    db.TestConninfo,
+		Jobs:        2,
+		Rate:        2,
+		ScaleFactor: 10,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -45,5 +45,5 @@ func TestWorkload_Run(t *testing.T) {
 	err = w.Run(ctx)
 	assert.Nil(t, err)
 
-	assert.NoError(t, noisia.Cleanup(context.Background(), config.PostgresConninfo))
+	assert.NoError(t, noisia.Cleanup(context.Background(), config.Conninfo))
 }

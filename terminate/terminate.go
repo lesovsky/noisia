@@ -10,12 +10,12 @@ import (
 
 // Config defines configuration settings for backends terminate workload.
 type Config struct {
-	// PostgresConninfo defines connections string used for connecting to Postgres.
-	PostgresConninfo string
-	// TerminateInterval defines a single round in seconds during which the number of backends/queries should be terminated (accordingly to rate).
-	TerminateInterval int
-	// TerminateRate defines a rate of how many backends should be terminated (or queries canceled) per interval.
-	TerminateRate int
+	// Conninfo defines connections string used for connecting to Postgres.
+	Conninfo string
+	// Interval defines a single round in seconds during which the number of backends/queries should be terminated (accordingly to rate).
+	Interval int
+	// Rate defines a rate of how many backends should be terminated (or queries canceled) per interval.
+	Rate int
 	// SoftMode defines to use pg_cancel_backend() instead of pg_terminate_backend().
 	SoftMode bool
 	// IgnoreSystemBackends controls whether system background process should be terminated or not.
@@ -32,11 +32,11 @@ type Config struct {
 
 // validate method checks workload configuration settings.
 func (c Config) validate() error {
-	if c.TerminateInterval < 1 {
+	if c.Interval < 1 {
 		return fmt.Errorf("terminate interval must be greater than zero")
 	}
 
-	if c.TerminateRate < 1 {
+	if c.Rate < 1 {
 		return fmt.Errorf("terminate rate must be greater than zero")
 	}
 
@@ -60,7 +60,7 @@ func NewWorkload(config Config) (noisia.Workload, error) {
 
 // Run method connects to Postgres and starts the workload.
 func (w *workload) Run(ctx context.Context) error {
-	pool, err := db.NewPostgresDB(ctx, w.config.PostgresConninfo)
+	pool, err := db.NewPostgresDB(ctx, w.config.Conninfo)
 	if err != nil {
 		return err
 	}
@@ -68,7 +68,7 @@ func (w *workload) Run(ctx context.Context) error {
 	defer w.pool.Close()
 
 	// calculate inter-query interval for rate throttling
-	interval := time.Duration(1000000000*w.config.TerminateInterval/w.config.TerminateRate) * time.Nanosecond
+	interval := time.Duration(1000000000*w.config.Interval/w.config.Rate) * time.Nanosecond
 	timer := time.NewTimer(interval)
 
 	for {

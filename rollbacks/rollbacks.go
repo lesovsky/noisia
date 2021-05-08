@@ -12,8 +12,8 @@ import (
 
 // Config defines configuration settings for rollbacks workload.
 type Config struct {
-	// PostgresConninfo defines connections string used for connecting to Postgres.
-	PostgresConninfo string
+	// Conninfo defines connections string used for connecting to Postgres.
+	Conninfo string
 	// Jobs defines how many workers should be created for producing rollbacks.
 	Jobs uint16
 	// MinRate defines minimum approximate target rate for produced rollbacks per second (per single worker).
@@ -61,7 +61,7 @@ func (w *workload) Run(ctx context.Context) error {
 	for i := 0; i < int(w.config.Jobs); i++ {
 		// Create connection for each worker. Pool is not used because each worker
 		// creates a temporary table used during workload.
-		conn, err := db.Connect(ctx, w.config.PostgresConninfo)
+		conn, err := db.Connect(ctx, w.config.Conninfo)
 		if err != nil {
 			// TODO: expose errors outside
 			continue

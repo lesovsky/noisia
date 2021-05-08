@@ -27,7 +27,7 @@ func TestConfig_validate(t *testing.T) {
 
 func TestWorkload_Run(t *testing.T) {
 	config := Config{
-		PostgresConninfo: db.TestConninfo,
+		Conninfo: db.TestConninfo,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

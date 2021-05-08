@@ -30,7 +30,7 @@ func TestConfig_validate(t *testing.T) {
 }
 
 func TestWorkload_Run(t *testing.T) {
-	config := Config{PostgresConninfo: db.TestConninfo, Jobs: 2, MinRate: 5, MaxRate: 10}
+	config := Config{Conninfo: db.TestConninfo, Jobs: 2, MinRate: 5, MaxRate: 10}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -40,7 +40,7 @@ func TestWorkload_Run(t *testing.T) {
 	err = w.Run(ctx)
 	assert.Nil(t, err)
 
-	assert.NoError(t, noisia.Cleanup(context.Background(), config.PostgresConninfo))
+	assert.NoError(t, noisia.Cleanup(context.Background(), config.Conninfo))
 }
 
 func Test_createTempTable(t *testing.T) {

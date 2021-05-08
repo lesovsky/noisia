@@ -9,8 +9,8 @@ import (
 
 // Config defines configuration settings for idle transactions workload.
 type Config struct {
-	// PostgresConninfo defines connections string used for connecting to Postgres.
-	PostgresConninfo string
+	// Conninfo defines connections string used for connecting to Postgres.
+	Conninfo string
 }
 
 // validate method checks workload configuration settings.
@@ -48,7 +48,7 @@ func (w *workload) Run(ctx context.Context) error {
 		// Wait until timer has been expired or context has been done.
 		select {
 		case <-timer.C:
-			c, err := db.Connect(ctx, w.config.PostgresConninfo)
+			c, err := db.Connect(ctx, w.config.Conninfo)
 			if err != nil {
 				// if connect has failed, increase interval between connects
 				interval = interval * 2

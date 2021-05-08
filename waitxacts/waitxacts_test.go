@@ -14,10 +14,10 @@ func TestConfig_validate(t *testing.T) {
 		valid  bool
 		config Config
 	}{
-		{valid: true, config: Config{Jobs: 2, WaitXactsLocktimeMin: 5, WaitXactsLocktimeMax: 10}},
+		{valid: true, config: Config{Jobs: 2, LocktimeMin: 5, LocktimeMax: 10}},
 		{valid: false, config: Config{Jobs: 1}},
-		{valid: false, config: Config{Jobs: 2, WaitXactsLocktimeMin: 5, WaitXactsLocktimeMax: 4}},
-		{valid: false, config: Config{Jobs: 2, WaitXactsLocktimeMin: 0, WaitXactsLocktimeMax: 0}},
+		{valid: false, config: Config{Jobs: 2, LocktimeMin: 5, LocktimeMax: 4}},
+		{valid: false, config: Config{Jobs: 2, LocktimeMin: 0, LocktimeMax: 0}},
 	}
 
 	for _, tc := range testcases {
@@ -31,10 +31,10 @@ func TestConfig_validate(t *testing.T) {
 
 func TestWorkload_Run(t *testing.T) {
 	config := Config{
-		PostgresConninfo:     db.TestConninfo,
-		Jobs:                 2,
-		WaitXactsLocktimeMin: 1,
-		WaitXactsLocktimeMax: 2,
+		Conninfo:    db.TestConninfo,
+		Jobs:        2,
+		LocktimeMin: 1,
+		LocktimeMax: 2,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -45,7 +45,7 @@ func TestWorkload_Run(t *testing.T) {
 	err = w.Run(ctx)
 	assert.Nil(t, err)
 
-	assert.NoError(t, noisia.Cleanup(context.Background(), config.PostgresConninfo))
+	assert.NoError(t, noisia.Cleanup(context.Background(), config.Conninfo))
 }
 
 func Test_selectRandomTable(t *testing.T) {
