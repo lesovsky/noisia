@@ -126,6 +126,9 @@ func (w *workload) cleanup(ctx context.Context) error {
 // startLoop start workload loop until context timeout exceeded.
 func startLoop(ctx context.Context, pool db.DB, tables []string, jobs uint16, minTime, maxTime int) error {
 	// Keep specified number of workers using channel - run new workers until there is any free slot
+
+	rand.Seed(time.Now().UnixNano())
+
 	guard := make(chan struct{}, jobs)
 	for {
 		select {

@@ -84,6 +84,8 @@ func startLoop(ctx context.Context, pool db.DB, tables []string, jobs uint16, mi
 	// While running, keep required number of workers using channel.
 	// Run new workers only until there is any free slot.
 
+	rand.Seed(time.Now().UnixNano())
+
 	guard := make(chan struct{}, jobs)
 	for {
 		select {
@@ -138,6 +140,7 @@ func selectRandomTable(tables []string) string {
 		return ""
 	}
 
+	rand.Seed(time.Now().UnixNano())
 	return tables[rand.Intn(len(tables))]
 }
 
