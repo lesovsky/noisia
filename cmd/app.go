@@ -118,13 +118,13 @@ func startIdleXactsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 		IdleXactsNaptimeMax: c.idleXactsNaptimeMax,
 	})
 	if err != nil {
-		fmt.Printf("idle transactions workload failed: %s", err)
+		fmt.Printf("idle transactions workload failed: %s\n", err)
 		return
 	}
 
 	err = workload.Run(ctx)
 	if err != nil {
-		fmt.Printf("idle transactions workload failed: %s", err)
+		fmt.Printf("idle transactions workload failed: %s\n", err)
 	}
 }
 
@@ -138,13 +138,13 @@ func startRollbacksWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 		MaxRate:          c.rollbacksMaxRate,
 	})
 	if err != nil {
-		fmt.Printf("rollbacks workload failed: %s", err)
+		fmt.Printf("rollbacks workload failed: %s\n", err)
 		return
 	}
 
 	err = workload.Run(ctx)
 	if err != nil {
-		fmt.Printf("rollbacks workload failed: %s", err)
+		fmt.Printf("rollbacks workload failed: %s\n", err)
 	}
 }
 
@@ -159,13 +159,13 @@ func startWaitxactsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 		WaitXactsLocktimeMax: c.waitXactsLocktimeMax,
 	})
 	if err != nil {
-		fmt.Printf("waiting xacts workload failed: %s", err)
+		fmt.Printf("waiting xacts workload failed: %s\n", err)
 		return
 	}
 
 	err = workload.Run(ctx)
 	if err != nil {
-		fmt.Printf("waiting xacts workload failed: %s", err)
+		fmt.Printf("waiting xacts workload failed: %s\n", err)
 	}
 }
 
@@ -177,13 +177,13 @@ func startDeadlocksWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 		Jobs:             c.jobs,
 	})
 	if err != nil {
-		fmt.Printf("deadlocks workload failed: %s", err)
+		fmt.Printf("deadlocks workload failed: %s\n", err)
 		return
 	}
 
 	err = workload.Run(ctx)
 	if err != nil {
-		fmt.Printf("deadlocks workload failed: %s", err)
+		fmt.Printf("deadlocks workload failed: %s\n", err)
 	}
 }
 
@@ -197,13 +197,13 @@ func startTempFilesWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 		TempFilesScaleFactor: c.tempFilesScaleFactor,
 	})
 	if err != nil {
-		fmt.Printf("temp files workload failed: %s", err)
+		fmt.Printf("temp files workload failed: %s\n", err)
 		return
 	}
 
 	err = workload.Run(ctx)
 	if err != nil {
-		fmt.Printf("temp files workload failed: %s", err)
+		fmt.Printf("temp files workload failed: %s\n", err)
 	}
 }
 
@@ -222,13 +222,13 @@ func startTerminateWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 		ApplicationName:      c.terminateAppName,
 	})
 	if err != nil {
-		fmt.Printf("terminate backends workload failed: %s", err)
+		fmt.Printf("terminate backends workload failed: %s\n", err)
 		return
 	}
 
 	err = workload.Run(ctx)
 	if err != nil {
-		fmt.Printf("terminate backends workload failed: %s", err)
+		fmt.Printf("terminate backends workload failed: %s\n", err)
 	}
 }
 
@@ -239,12 +239,12 @@ func startFailconnsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 		PostgresConninfo: c.postgresConninfo,
 	})
 	if err != nil {
-		fmt.Printf("failconns workload failed: %s", err)
+		fmt.Printf("failconns workload failed: %s\n", err)
 		return
 	}
 
 	err = workload.Run(ctx)
 	if err != nil {
-		fmt.Printf("failconns workload failed: %s", err)
+		fmt.Printf("failconns workload failed: %s\n", err)
 	}
 }
