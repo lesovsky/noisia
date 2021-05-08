@@ -85,7 +85,7 @@ func (w *workload) Run(ctx context.Context) error {
 		tables = []string{"_noisia_waitxacts_workload"}
 
 		// Cleanup in the end.
-		defer func() { _ = w.cleanup(ctx) }()
+		defer func() { _ = w.cleanup() }()
 	}
 
 	return startLoop(ctx, pool, tables, w.config.Jobs, w.config.LocktimeMin, w.config.LocktimeMax+1)
@@ -114,11 +114,12 @@ func (w *workload) prepare(ctx context.Context) error {
 }
 
 // cleanup perform fixtures cleanup after workload has been done.
-func (w *workload) cleanup(ctx context.Context) error {
-	_, _, err := w.pool.Exec(ctx, "DROP TABLE IF EXISTS _noisia_waitxacts_workload")
+func (w *workload) cleanup() error {
+	_, _, err := w.pool.Exec(context.Background(), "DROP TABLE IF EXISTS _noisia_waitxacts_workload")
 	if err != nil {
 		return err
 	}
+
 	return nil
 }
 

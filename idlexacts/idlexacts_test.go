@@ -2,7 +2,6 @@ package idlexacts
 
 import (
 	"context"
-	"github.com/lesovsky/noisia"
 	"github.com/lesovsky/noisia/db"
 	"github.com/stretchr/testify/assert"
 	"testing"
@@ -47,8 +46,6 @@ func TestWorkload_Run(t *testing.T) {
 	assert.NoError(t, err)
 	err = w.Run(ctx)
 	assert.NoError(t, err)
-
-	assert.NoError(t, noisia.Cleanup(context.Background(), config.Conninfo))
 
 	// Connect to invalid DB
 	config.Conninfo = "database=noisia_invalid"

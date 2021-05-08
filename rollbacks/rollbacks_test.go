@@ -2,7 +2,6 @@ package rollbacks
 
 import (
 	"context"
-	"github.com/lesovsky/noisia"
 	"github.com/lesovsky/noisia/db"
 	"github.com/stretchr/testify/assert"
 	"testing"
@@ -41,8 +40,6 @@ func TestWorkload_Run(t *testing.T) {
 	assert.NoError(t, err)
 	err = w.Run(ctx)
 	assert.Nil(t, err)
-
-	assert.NoError(t, noisia.Cleanup(context.Background(), config.Conninfo))
 }
 
 func Test_createTempTable(t *testing.T) {

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/lesovsky/noisia"
 	"github.com/lesovsky/noisia/deadlocks"
 	"github.com/lesovsky/noisia/failconns"
 	"github.com/lesovsky/noisia/idlexacts"
@@ -18,7 +17,6 @@ import (
 
 type config struct {
 	logger                zerolog.Logger
-	doCleanup             bool
 	postgresConninfo      string
 	jobs                  uint16 // max 65535
 	duration              time.Duration
@@ -49,11 +47,6 @@ type config struct {
 }
 
 func runApplication(ctx context.Context, c *config, log zerolog.Logger) error {
-	if c.doCleanup {
-		log.Info().Msg("do cleanup")
-		return noisia.Cleanup(ctx, c.postgresConninfo)
-	}
-
 	ctx, cancel := context.WithTimeout(ctx, c.duration)
 	defer cancel()
 

@@ -7,6 +7,7 @@ import (
 	"gopkg.in/alecthomas/kingpin.v2"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -18,7 +19,6 @@ var (
 func main() {
 	var (
 		showVersion           = kingpin.Flag("version", "show version and exit").Default().Bool()
-		doCleanup             = kingpin.Flag("cleanup", "do cleanup of workloads related tables from database").Default("false").Envar("NOISIA_CLEANUP").Bool()
 		postgresConninfo      = kingpin.Flag("conninfo", "Postgres connection string (DSN or URL), must be specified explicitly").Default("").Envar("NOISIA_POSTGRES_CONNINFO").String()
 		jobs                  = kingpin.Flag("jobs", "Run workload with specified number of workers").Default("1").Envar("NOISIA_JOBS").Uint16()
 		duration              = kingpin.Flag("duration", "Duration of tests").Default("10s").Envar("NOISIA_DURATION").Duration()
@@ -49,16 +49,15 @@ func main() {
 	)
 	kingpin.Parse()
 
-	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}).Level(zerolog.InfoLevel).With().Timestamp().Logger()
-
 	if *showVersion {
 		fmt.Printf("%s %s %s-%s\n", appName, gitTag, gitCommit, gitBranch)
 		os.Exit(0)
 	}
 
+	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}).Level(zerolog.InfoLevel).With().Timestamp().Logger()
+
 	config := &config{
 		logger:                logger,
-		doCleanup:             *doCleanup,
 		postgresConninfo:      *postgresConninfo,
 		jobs:                  *jobs,
 		duration:              *duration,
@@ -90,18 +89,32 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	var doExit = make(chan error, 2)
+	var wg sync.WaitGroup
+	doExit := make(chan error, 2)
+
+	// Run signal listener.
+	wg.Add(1)
 	go func() {
 		doExit <- listenSignals()
 		cancel()
+		wg.Done()
 	}()
 
+	// Run application.
+	wg.Add(1)
 	go func() {
 		doExit <- runApplication(ctx, config, logger)
 		cancel()
+		wg.Done()
 	}()
 
+	// Waiting for signal or application done.
 	rc := <-doExit
+
+	// Waiting until goroutines finish.
+	wg.Wait()
+
+	// Print last message and return.
 	if rc != nil {
 		logger.Info().Msgf("shutdown: %s", rc)
 	} else {

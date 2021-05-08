@@ -2,8 +2,6 @@ package waitxacts
 
 import (
 	"context"
-	"github.com/lesovsky/noisia"
-	"github.com/lesovsky/noisia/db"
 	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"
@@ -33,10 +31,12 @@ func TestConfig_validate(t *testing.T) {
 
 func TestWorkload_Run(t *testing.T) {
 	config := Config{
-		Conninfo:    db.TestConninfo,
+		//Conninfo:    db.TestConninfo,
+		Conninfo:    "database=lesovsky",
+		Fixture:     true,
 		Jobs:        2,
-		LocktimeMin: 1,
-		LocktimeMax: 2,
+		LocktimeMin: 1 * time.Second,
+		LocktimeMax: 2 * time.Second,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -46,8 +46,6 @@ func TestWorkload_Run(t *testing.T) {
 	assert.NoError(t, err)
 	err = w.Run(ctx)
 	assert.Nil(t, err)
-
-	assert.NoError(t, noisia.Cleanup(context.Background(), config.Conninfo))
 }
 
 func Test_selectRandomTable(t *testing.T) {

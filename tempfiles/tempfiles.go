@@ -77,7 +77,7 @@ func (w *workload) Run(ctx context.Context) error {
 	}
 
 	// Cleanup in the end.
-	defer func() { _ = w.cleanup(ctx) }()
+	defer func() { _ = w.cleanup() }()
 
 	// calculate inter-query interval for rate throttling
 	interval := 1000000000 / int64(w.config.Rate)
@@ -114,8 +114,8 @@ func (w *workload) prepare(ctx context.Context) error {
 	return nil
 }
 
-func (w *workload) cleanup(ctx context.Context) error {
-	_, _, err := w.pool.Exec(ctx, "DROP TABLE IF EXISTS _noisia_tempfiles_workload")
+func (w *workload) cleanup() error {
+	_, _, err := w.pool.Exec(context.Background(), "DROP TABLE IF EXISTS _noisia_tempfiles_workload")
 	if err != nil {
 		return err
 	}

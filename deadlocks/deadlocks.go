@@ -58,7 +58,7 @@ func (w *workload) Run(ctx context.Context) error {
 	}
 
 	// Cleanup in the end.
-	defer func() { _ = w.cleanup(ctx) }()
+	defer func() { _ = w.cleanup() }()
 
 	// Keep specified number of workers using channel - run new workers until there is any free slot.
 	guard := make(chan struct{}, w.config.Jobs)
@@ -86,8 +86,8 @@ func (w *workload) prepare(ctx context.Context) error {
 	return nil
 }
 
-func (w *workload) cleanup(ctx context.Context) error {
-	_, _, err := w.pool.Exec(ctx, "DROP TABLE IF EXISTS _noisia_deadlocks_workload")
+func (w *workload) cleanup() error {
+	_, _, err := w.pool.Exec(context.Background(), "DROP TABLE IF EXISTS _noisia_deadlocks_workload")
 	if err != nil {
 		return err
 	}
