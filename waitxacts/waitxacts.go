@@ -10,17 +10,6 @@ import (
 	"time"
 )
 
-const (
-	// defaultJobsNum defines minimum number of workers necessary for generating the workload.
-	defaultJobsNum = 2
-	// defaultWaitXactsLocktimeMin defines default lower threshold of locking period.
-	defaultWaitXactsLocktimeMin = 5
-	// defaultWaitXactsLocktimeMax defines default upper threshold of locking period.
-	defaultWaitXactsLocktimeMax = 20
-	// maxAffectedTables defines max number of tables which will be affected by blocking transactions.
-	maxAffectedTables = 3
-)
-
 // Config defines configuration settings for waiting transactions workload
 type Config struct {
 	// PostgresConninfo defines connections string used for connecting to Postgres.
@@ -35,29 +24,44 @@ type Config struct {
 	WaitXactsLocktimeMax int
 }
 
-func (c *Config) defaults() {
+// validate method checks workload configuration settings.
+func (c Config) validate() error {
 	if c.Jobs < 2 {
-		c.Jobs = defaultJobsNum
+		return fmt.Errorf("jobs must be greater than 1")
 	}
-	if c.WaitXactsLocktimeMin == 0 {
-		c.WaitXactsLocktimeMin = defaultWaitXactsLocktimeMin
+
+	if c.WaitXactsLocktimeMin == 0 && c.WaitXactsLocktimeMax == 0 {
+		return fmt.Errorf("min and max lock time must be greater than zero")
 	}
-	if c.WaitXactsLocktimeMax == 0 {
-		c.WaitXactsLocktimeMax = defaultWaitXactsLocktimeMax
+
+	if c.WaitXactsLocktimeMin > c.WaitXactsLocktimeMax {
+		return fmt.Errorf("min lock time must be less or equal to max lock time")
 	}
+
+	return nil
 }
 
+// workload implements noisia.Workload interface.
 type workload struct {
 	config *Config
 	pool   db.DB
 }
 
-func NewWorkload(config *Config) noisia.Workload {
-	config.defaults()
-	return &workload{config, nil}
+// NewWorkload creates a new workload with specified config.
+func NewWorkload(config *Config) (noisia.Workload, error) {
+	err := config.validate()
+	if err != nil {
+		return nil, err
+	}
+
+	return &workload{config, nil}, nil
 }
 
+// Run connects to Postgres and starts the workload.
 func (w *workload) Run(ctx context.Context) error {
+	// maxAffectedTables defines max number of tables which will be affected by blocking transactions.
+	maxAffectedTables := 3
+
 	pool, err := db.NewPostgresDB(ctx, w.config.PostgresConninfo)
 	if err != nil {
 		return err
@@ -84,7 +88,8 @@ func (w *workload) Run(ctx context.Context) error {
 		defer func() { _ = w.cleanup(ctx) }()
 	}
 
-	return startLoop(ctx, pool, tables, w.config.Jobs, w.config.WaitXactsLocktimeMin, w.config.WaitXactsLocktimeMax)
+	// Increment NaptimeMax up to 1 second due to rand.Intn() never return max value.
+	return startLoop(ctx, pool, tables, w.config.Jobs, w.config.WaitXactsLocktimeMin, w.config.WaitXactsLocktimeMax+1)
 }
 
 // prepare method creates fixture table for workload.

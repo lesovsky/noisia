@@ -111,14 +111,18 @@ func runApplication(ctx context.Context, c *config, log zerolog.Logger) error {
 func startIdleXactsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) {
 	defer wg.Done()
 
-	workload := idlexacts.NewWorkload(&idlexacts.Config{
+	workload, err := idlexacts.NewWorkload(&idlexacts.Config{
 		PostgresConninfo:    c.postgresConninfo,
 		Jobs:                c.jobs,
 		IdleXactsNaptimeMin: c.idleXactsNaptimeMin,
 		IdleXactsNaptimeMax: c.idleXactsNaptimeMax,
 	})
+	if err != nil {
+		fmt.Printf("idle transactions workload failed: %s", err)
+		return
+	}
 
-	err := workload.Run(ctx)
+	err = workload.Run(ctx)
 	if err != nil {
 		fmt.Printf("idle transactions workload failed: %s", err)
 	}
@@ -127,14 +131,18 @@ func startIdleXactsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 func startRollbacksWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) {
 	defer wg.Done()
 
-	workload := rollbacks.NewWorkload(&rollbacks.Config{
+	workload, err := rollbacks.NewWorkload(&rollbacks.Config{
 		PostgresConninfo: c.postgresConninfo,
 		Jobs:             c.jobs,
 		MinRate:          c.rollbacksMinRate,
 		MaxRate:          c.rollbacksMaxRate,
 	})
+	if err != nil {
+		fmt.Printf("rollbacks workload failed: %s", err)
+		return
+	}
 
-	err := workload.Run(ctx)
+	err = workload.Run(ctx)
 	if err != nil {
 		fmt.Printf("rollbacks workload failed: %s", err)
 	}
@@ -143,15 +151,19 @@ func startRollbacksWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 func startWaitxactsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) {
 	defer wg.Done()
 
-	workload := waitxacts.NewWorkload(&waitxacts.Config{
+	workload, err := waitxacts.NewWorkload(&waitxacts.Config{
 		PostgresConninfo:     c.postgresConninfo,
 		Jobs:                 c.jobs,
 		Fixture:              c.waitXactsFixture,
 		WaitXactsLocktimeMin: c.waitXactsLocktimeMin,
 		WaitXactsLocktimeMax: c.waitXactsLocktimeMax,
 	})
+	if err != nil {
+		fmt.Printf("waiting xacts workload failed: %s", err)
+		return
+	}
 
-	err := workload.Run(ctx)
+	err = workload.Run(ctx)
 	if err != nil {
 		fmt.Printf("waiting xacts workload failed: %s", err)
 	}

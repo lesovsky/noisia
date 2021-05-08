@@ -10,11 +10,6 @@ import (
 	"time"
 )
 
-const (
-	// defaultRate defines default rate of produced rollbacks per second.
-	defaultRate = 10
-)
-
 // Config defines configuration settings for rollbacks workload.
 type Config struct {
 	// PostgresConninfo defines connections string used for connecting to Postgres.
@@ -27,25 +22,36 @@ type Config struct {
 	MaxRate int
 }
 
-func (c *Config) defaults() {
-	if c.MinRate == 0 && c.MaxRate == 0 {
-		c.MinRate, c.MaxRate = defaultRate, defaultRate
+// validate method checks workload configuration settings.
+func (c Config) validate() error {
+	if c.Jobs < 1 {
+		return fmt.Errorf("jobs must be greater than zero")
 	}
 
-	// Min rate cannot be higher than max rate.
-	if c.MinRate > c.MaxRate {
-		c.MinRate = c.MaxRate
+	if c.MinRate == 0 && c.MaxRate == 0 {
+		return fmt.Errorf("min and max rate must be greater than zero")
 	}
+
+	if c.MinRate > c.MaxRate {
+		return fmt.Errorf("min rate must be less or equal to max rate")
+	}
+
+	return nil
 }
 
+// workload implements noisia.Workload interface.
 type workload struct {
 	config *Config
 }
 
 // NewWorkload creates a new workload with specified config.
-func NewWorkload(config *Config) noisia.Workload {
-	config.defaults()
-	return &workload{config}
+func NewWorkload(config *Config) (noisia.Workload, error) {
+	err := config.validate()
+	if err != nil {
+		return nil, err
+	}
+
+	return &workload{config}, nil
 }
 
 // Run method connects to Postgres and starts the workload.
@@ -64,7 +70,8 @@ func (w *workload) Run(ctx context.Context) error {
 		// Start working loop.
 		wg.Add(1)
 		go func() {
-			_, _, _ = startLoop(ctx, conn, w.config.MinRate, w.config.MaxRate)
+			// Increment MaxRate up to 1 due to rand.Intn() never return max value.
+			_, _, _ = startLoop(ctx, conn, w.config.MinRate, w.config.MaxRate+1)
 			// TODO: expose errors outside if any
 
 			_ = conn.Close()

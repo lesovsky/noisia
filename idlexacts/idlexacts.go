@@ -10,15 +10,6 @@ import (
 	"time"
 )
 
-const (
-	// defaultIdleXactsNaptimeMin defines default lower threshold for idle interval.
-	defaultIdleXactsNaptimeMin = 5
-	// defaultIdleXactsNaptimeMax defines default upper threshold for idle interval.
-	defaultIdleXactsNaptimeMax = 20
-	// maxAffectedTables defines max number of tables which will be affected by idle transactions.
-	maxAffectedTables = 3
-)
-
 // Config defines configuration settings for idle transactions workload.
 type Config struct {
 	// PostgresConninfo defines connections string used for connecting to Postgres.
@@ -31,28 +22,42 @@ type Config struct {
 	IdleXactsNaptimeMax int
 }
 
-func (c *Config) defaults() {
-	if c.IdleXactsNaptimeMin == 0 {
-		c.IdleXactsNaptimeMin = defaultIdleXactsNaptimeMin
+// validate method checks workload configuration settings.
+func (c Config) validate() error {
+	if c.Jobs < 1 {
+		return fmt.Errorf("jobs must be greater than zero")
 	}
 
-	if c.IdleXactsNaptimeMax == 0 {
-		c.IdleXactsNaptimeMax = defaultIdleXactsNaptimeMax
+	if c.IdleXactsNaptimeMin == 0 && c.IdleXactsNaptimeMax == 0 {
+		return fmt.Errorf("min and max idle time must be greater than zero")
 	}
+
+	if c.IdleXactsNaptimeMin > c.IdleXactsNaptimeMax {
+		return fmt.Errorf("min naptime must be less or equal to naptime max")
+	}
+
+	return nil
 }
 
+// workload implements noisia.Workload interface.
 type workload struct {
 	config *Config
 }
 
 // NewWorkload creates a new workload with specified config.
-func NewWorkload(config *Config) noisia.Workload {
-	config.defaults()
-	return &workload{config}
+func NewWorkload(config *Config) (noisia.Workload, error) {
+	err := config.validate()
+	if err != nil {
+		return nil, err
+	}
+	return &workload{config}, nil
 }
 
 // Run connects to Postgres and starts the workload.
 func (w *workload) Run(ctx context.Context) error {
+	// maxAffectedTables defines max number of tables which will be affected by idle transactions.
+	maxAffectedTables := 3
+
 	pool, err := db.NewPostgresDB(ctx, w.config.PostgresConninfo)
 	if err != nil {
 		return err
@@ -70,7 +75,8 @@ func (w *workload) Run(ctx context.Context) error {
 
 	// TODO: что если база пустая и нет таблиц?
 
-	return startLoop(ctx, pool, tables, w.config.Jobs, w.config.IdleXactsNaptimeMin, w.config.IdleXactsNaptimeMax)
+	// Increment NaptimeMax up to 1 second due to rand.Intn() never return max value.
+	return startLoop(ctx, pool, tables, w.config.Jobs, w.config.IdleXactsNaptimeMin, w.config.IdleXactsNaptimeMax+1)
 }
 
 // startLoop starts workload using passed settings and database connection.
