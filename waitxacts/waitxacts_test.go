@@ -14,9 +14,11 @@ func TestConfig_validate(t *testing.T) {
 		valid  bool
 		config Config
 	}{
-		{valid: true, config: Config{Jobs: 2, LocktimeMin: 5, LocktimeMax: 10}},
+		{valid: true, config: Config{Jobs: 2, LocktimeMin: 5 * time.Second, LocktimeMax: 10 * time.Second}},
 		{valid: false, config: Config{Jobs: 1}},
-		{valid: false, config: Config{Jobs: 2, LocktimeMin: 5, LocktimeMax: 4}},
+		{valid: false, config: Config{Jobs: 2, LocktimeMin: 5 * time.Second, LocktimeMax: 4 * time.Second}},
+		{valid: false, config: Config{Jobs: 2, LocktimeMin: 5 * time.Second, LocktimeMax: 0}},
+		{valid: false, config: Config{Jobs: 2, LocktimeMin: 0, LocktimeMax: 5 * time.Second}},
 		{valid: false, config: Config{Jobs: 2, LocktimeMin: 0, LocktimeMax: 0}},
 	}
 

@@ -19,9 +19,9 @@ type Config struct {
 	// Fixture defines to run fixture test which is not affect already running workload.
 	Fixture bool
 	// LocktimeMin defines a lower threshold of locking interval for blocking transactions.
-	LocktimeMin int
+	LocktimeMin time.Duration
 	// LocktimeMax defines an upper threshold of locking interval for blocking transactions.
-	LocktimeMax int
+	LocktimeMax time.Duration
 }
 
 // validate method checks workload configuration settings.
@@ -30,7 +30,7 @@ func (c Config) validate() error {
 		return fmt.Errorf("jobs must be greater than 1")
 	}
 
-	if c.LocktimeMin == 0 && c.LocktimeMax == 0 {
+	if c.LocktimeMin == 0 || c.LocktimeMax == 0 {
 		return fmt.Errorf("min and max lock time must be greater than zero")
 	}
 
@@ -88,7 +88,6 @@ func (w *workload) Run(ctx context.Context) error {
 		defer func() { _ = w.cleanup(ctx) }()
 	}
 
-	// Increment NaptimeMax up to 1 second due to rand.Intn() never return max value.
 	return startLoop(ctx, pool, tables, w.config.Jobs, w.config.LocktimeMin, w.config.LocktimeMax+1)
 }
 
@@ -124,10 +123,13 @@ func (w *workload) cleanup(ctx context.Context) error {
 }
 
 // startLoop start workload loop until context timeout exceeded.
-func startLoop(ctx context.Context, pool db.DB, tables []string, jobs uint16, minTime, maxTime int) error {
+func startLoop(ctx context.Context, pool db.DB, tables []string, jobs uint16, minTime, maxTime time.Duration) error {
 	// Keep specified number of workers using channel - run new workers until there is any free slot
 
 	rand.Seed(time.Now().UnixNano())
+
+	// Increment maxTime up to 1 second due to rand.Int63n() never return max value.
+	maxTime++
 
 	guard := make(chan struct{}, jobs)
 	for {
@@ -136,7 +138,7 @@ func startLoop(ctx context.Context, pool db.DB, tables []string, jobs uint16, mi
 		case guard <- struct{}{}:
 			go func() {
 				table := selectRandomTable(tables)
-				naptime := time.Duration(rand.Intn(maxTime-minTime)+minTime) * time.Second
+				naptime := time.Duration(rand.Int63n(maxTime.Nanoseconds()-minTime.Nanoseconds()) + minTime.Nanoseconds())
 
 				lockTable(ctx, pool, table, naptime)
 

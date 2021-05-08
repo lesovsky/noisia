@@ -30,8 +30,8 @@ type config struct {
 	rollbacksMaxRate      uint16
 	waitXacts             bool
 	waitXactsFixture      bool
-	waitXactsLocktimeMin  int
-	waitXactsLocktimeMax  int
+	waitXactsLocktimeMin  time.Duration
+	waitXactsLocktimeMax  time.Duration
 	deadlocks             bool
 	tempFiles             bool
 	tempFilesRate         uint16
