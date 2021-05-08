@@ -23,8 +23,8 @@ type config struct {
 	jobs                  uint16 // max 65535
 	duration              time.Duration
 	idleXacts             bool
-	idleXactsNaptimeMin   int
-	idleXactsNaptimeMax   int
+	idleXactsNaptimeMin   time.Duration
+	idleXactsNaptimeMax   time.Duration
 	rollbacks             bool
 	rollbacksMinRate      int
 	rollbacksMaxRate      int

@@ -17,9 +17,9 @@ type Config struct {
 	// Jobs defines how many concurrent idle transactions should be running during workload.
 	Jobs uint16
 	// NaptimeMin defines lower threshold when transactions can idle.
-	NaptimeMin int
+	NaptimeMin time.Duration
 	// NaptimeMax defines upper threshold when transactions can idle.
-	NaptimeMax int
+	NaptimeMax time.Duration
 }
 
 // validate method checks workload configuration settings.
@@ -73,16 +73,18 @@ func (w *workload) Run(ctx context.Context) error {
 		return err
 	}
 
-	// Increment NaptimeMax up to 1 second due to rand.Intn() never return max value.
-	return startLoop(ctx, pool, tables, w.config.Jobs, w.config.NaptimeMin, w.config.NaptimeMax+1)
+	return startLoop(ctx, pool, tables, w.config.Jobs, w.config.NaptimeMin, w.config.NaptimeMax)
 }
 
 // startLoop starts workload using passed settings and database connection.
-func startLoop(ctx context.Context, pool db.DB, tables []string, jobs uint16, minTime, maxTime int) error {
+func startLoop(ctx context.Context, pool db.DB, tables []string, jobs uint16, minTime, maxTime time.Duration) error {
 	// While running, keep required number of workers using channel.
 	// Run new workers only until there is any free slot.
 
 	rand.Seed(time.Now().UnixNano())
+
+	// Increment maxTime up to 1 due to rand.Int63n() never return max value.
+	maxTime++
 
 	guard := make(chan struct{}, jobs)
 	for {
@@ -91,7 +93,7 @@ func startLoop(ctx context.Context, pool db.DB, tables []string, jobs uint16, mi
 		case guard <- struct{}{}:
 			go func() {
 				table := selectRandomTable(tables)
-				naptime := time.Duration(rand.Intn(maxTime-minTime)+minTime) * time.Second
+				naptime := time.Duration(rand.Int63n(maxTime.Nanoseconds()-minTime.Nanoseconds()) + minTime.Nanoseconds())
 
 				startSingleIdleXact(ctx, pool, table, naptime)
 
