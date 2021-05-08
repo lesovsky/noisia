@@ -34,8 +34,8 @@ func TestWorkload_Run(t *testing.T) {
 	config := Config{
 		Conninfo:   db.TestConninfo,
 		Jobs:       2,
-		NaptimeMin: 1,
-		NaptimeMax: 2,
+		NaptimeMin: 1 * time.Second,
+		NaptimeMax: 2 * time.Second,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
