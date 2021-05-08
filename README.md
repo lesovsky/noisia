@@ -5,18 +5,18 @@
 ---
 
 #### Supported workloads:
-- `idle transactions` - transactions that do nothing during its lifetime.
-- `rollbacks` - transactions performed some work but rolled back in the end.
-- `waiting transactions` - transaction locked by other transactions and thus waiting.
+- `idle transactions` - active transactions on hot-write tables that do nothing during its lifetime.
+- `rollbacks` - fake invalid queries that generate errros and increase rollbacks counter.
+- `waiting transactions` - transactions that locks hot-write tables and then idle, that lead to stuck other transactions.
 - `deadlocks` - simultaneous transactions where each hold locks that the other transactions wants.
 - `temporary files` - queries that produce on-disk temporary files due to lack of `work_mem`.
 - `terminate backends` - terminate random backends (or queries) using `pg_terminate_backend()`, `pg_cancel_backend()`.
-- `failed connections` - exhaust connections pool (other clients can't connect to Postgres) 
+- `failed connections` - exhaust all available connections (other clients unable to connect to Postgres) 
 - ...see built-in help for more runtime options.
 
 #### Disclaimer
 
-ATTENTION: USE ONLY FOR TESTING PURPOSES, DO NOT EXECUTE NOISIA AGAINST PRODUCTION, RECKLESS USAGE WILL CAUSE PROBLEMS.
+ATTENTION: USE ONLY FOR TESTING PURPOSES, DO NOT EXECUTE NOISIA WITHOUT COMPLETE UNDERSTAING WHAT YOU REALLY DO, RECKLESS USAGE WILL CAUSE PROBLEMS.
 
 DISCLAIMER: THIS SOFTWARE PROVIDED AS-IS WITH NO CARES AND GUARANTEES RELATED TO YOUR DATABASES. USE AT YOUR OWN RISK.
 
@@ -56,10 +56,20 @@ func main() {
 }
 ```
 
-#### TODO/Ideas:
-If you have any ideas, feel free to open a [discussion](https://github.com/lesovsky/noisia/discussions).
+#### Workload impact
 
-[ ] sequential scans
+Running workloads could impact on already running workload produced by other applications. This impact might be expressed as performance degradation, transactions stuck, cancelled queries, disconnected clients, etc.
+
+| Workload  | Impact? |
+| :---         |     :---:      |
+| deadlocks  | No  |
+| failconns  | **Yes**  |
+| idlexacts  | **Yes**  |
+| rollbacks  | No  |
+| tempfiles  | No  |
+| terminate  | **Yes**  |
+| waitxacts  | **Yes**  |
+
 
 #### License
 BSD-3. See [LICENSE](LICENSE) for more details.
