@@ -2,6 +2,7 @@ package waitxacts
 
 import (
 	"context"
+	"github.com/lesovsky/noisia/db"
 	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"
@@ -31,8 +32,7 @@ func TestConfig_validate(t *testing.T) {
 
 func TestWorkload_Run(t *testing.T) {
 	config := Config{
-		//Conninfo:    db.TestConninfo,
-		Conninfo:    "database=lesovsky",
+		Conninfo:    db.TestConninfo,
 		Fixture:     true,
 		Jobs:        2,
 		LocktimeMin: 1 * time.Second,
