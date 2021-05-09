@@ -66,7 +66,6 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 	if c.rollbacks {
 		log.Info("start rollbacks workload")
 		wg.Add(1)
-		wg.Add(1)
 		go func() {
 			err := startRollbacksWorkload(ctx, &wg, c, log)
 			if err != nil {
