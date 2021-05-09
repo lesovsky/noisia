@@ -56,7 +56,7 @@ func main() {
 
 	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}).Level(zerolog.InfoLevel).With().Timestamp().Logger()
 
-	config := &config{
+	config := config{
 		logger:                logger,
 		postgresConninfo:      *postgresConninfo,
 		jobs:                  *jobs,

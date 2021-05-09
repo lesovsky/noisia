@@ -46,7 +46,7 @@ type config struct {
 	failconns             bool
 }
 
-func runApplication(ctx context.Context, c *config, log zerolog.Logger) error {
+func runApplication(ctx context.Context, c config, log zerolog.Logger) error {
 	ctx, cancel := context.WithTimeout(ctx, c.duration)
 	defer cancel()
 
@@ -100,7 +100,7 @@ func runApplication(ctx context.Context, c *config, log zerolog.Logger) error {
 }
 
 // startIdleXactsWorkload start generating workload with idle transactions.
-func startIdleXactsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) {
+func startIdleXactsWorkload(ctx context.Context, wg *sync.WaitGroup, c config) {
 	defer wg.Done()
 
 	workload, err := idlexacts.NewWorkload(idlexacts.Config{
@@ -120,7 +120,7 @@ func startIdleXactsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 	}
 }
 
-func startRollbacksWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) {
+func startRollbacksWorkload(ctx context.Context, wg *sync.WaitGroup, c config) {
 	defer wg.Done()
 
 	workload, err := rollbacks.NewWorkload(rollbacks.Config{
@@ -140,7 +140,7 @@ func startRollbacksWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 	}
 }
 
-func startWaitxactsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) {
+func startWaitxactsWorkload(ctx context.Context, wg *sync.WaitGroup, c config) {
 	defer wg.Done()
 
 	workload, err := waitxacts.NewWorkload(waitxacts.Config{
@@ -161,7 +161,7 @@ func startWaitxactsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 	}
 }
 
-func startDeadlocksWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) {
+func startDeadlocksWorkload(ctx context.Context, wg *sync.WaitGroup, c config) {
 	defer wg.Done()
 
 	workload, err := deadlocks.NewWorkload(deadlocks.Config{
@@ -179,7 +179,7 @@ func startDeadlocksWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 	}
 }
 
-func startTempFilesWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) {
+func startTempFilesWorkload(ctx context.Context, wg *sync.WaitGroup, c config) {
 	defer wg.Done()
 
 	workload, err := tempfiles.NewWorkload(tempfiles.Config{
@@ -199,7 +199,7 @@ func startTempFilesWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 	}
 }
 
-func startTerminateWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) {
+func startTerminateWorkload(ctx context.Context, wg *sync.WaitGroup, c config) {
 	defer wg.Done()
 
 	workload, err := terminate.NewWorkload(terminate.Config{
@@ -224,7 +224,7 @@ func startTerminateWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) 
 	}
 }
 
-func startFailconnsWorkload(ctx context.Context, wg *sync.WaitGroup, c *config) {
+func startFailconnsWorkload(ctx context.Context, wg *sync.WaitGroup, c config) {
 	defer wg.Done()
 
 	workload, err := failconns.NewWorkload(failconns.Config{
