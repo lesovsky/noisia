@@ -88,7 +88,7 @@ func (w *workload) Run(ctx context.Context) error {
 		defer func() { _ = w.cleanup() }()
 	}
 
-	return startLoop(ctx, pool, tables, w.config.Jobs, w.config.LocktimeMin, w.config.LocktimeMax+1)
+	return startLoop(ctx, pool, tables, w.config.Jobs, w.config.LocktimeMin, w.config.LocktimeMax)
 }
 
 // prepare method creates fixture table for workload.

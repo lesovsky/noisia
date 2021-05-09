@@ -71,8 +71,7 @@ func (w *workload) Run(ctx context.Context) error {
 		// Start working loop.
 		wg.Add(1)
 		go func() {
-			// Increment MaxRate up to 1 due to rand.Intn() never return max value.
-			_, _, _ = startLoop(ctx, conn, w.config.MinRate, w.config.MaxRate+1)
+			_, _, _ = startLoop(ctx, conn, w.config.MinRate, w.config.MaxRate)
 			// TODO: expose errors outside if any
 
 			_ = conn.Close()
@@ -93,6 +92,9 @@ func startLoop(ctx context.Context, conn db.Conn, minRate, maxRate uint16) (int,
 
 	// Initialize random source.
 	rand.Seed(time.Now().UnixNano())
+
+	// Increment MaxRate up to 1 due to rand.Intn() never return max value.
+	maxRate++
 
 	var successful, failed int
 
