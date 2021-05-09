@@ -3,13 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/rs/zerolog"
+	"github.com/lesovsky/noisia/log"
 	"gopkg.in/alecthomas/kingpin.v2"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
-	"time"
 )
 
 var (
@@ -54,7 +53,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}).Level(zerolog.InfoLevel).With().Timestamp().Logger()
+	logger := log.NewDefaultLogger()
 
 	config := config{
 		logger:                logger,
@@ -114,9 +113,9 @@ func main() {
 
 	// Print last message and return.
 	if rc != nil {
-		logger.Info().Msgf("shutdown: %s", rc)
+		logger.Infof("shutdown: %s", rc)
 	} else {
-		logger.Info().Msgf("shutdown: done")
+		logger.Info("shutdown: done")
 	}
 }
 

@@ -6,17 +6,17 @@ import (
 	"github.com/lesovsky/noisia/deadlocks"
 	"github.com/lesovsky/noisia/failconns"
 	"github.com/lesovsky/noisia/idlexacts"
+	"github.com/lesovsky/noisia/log"
 	"github.com/lesovsky/noisia/rollbacks"
 	"github.com/lesovsky/noisia/tempfiles"
 	"github.com/lesovsky/noisia/terminate"
 	"github.com/lesovsky/noisia/waitxacts"
-	"github.com/rs/zerolog"
 	"sync"
 	"time"
 )
 
 type config struct {
-	logger                zerolog.Logger
+	logger                log.Logger
 	postgresConninfo      string
 	jobs                  uint16 // max 65535
 	duration              time.Duration
@@ -46,50 +46,55 @@ type config struct {
 	failconns             bool
 }
 
-func runApplication(ctx context.Context, c config, log zerolog.Logger) error {
+func runApplication(ctx context.Context, c config, log log.Logger) error {
 	ctx, cancel := context.WithTimeout(ctx, c.duration)
 	defer cancel()
 
 	var wg sync.WaitGroup
 
 	if c.idleXacts {
-		log.Info().Msg("start idle transactions workload")
+		log.Info("start idle transactions workload")
 		wg.Add(1)
-		go startIdleXactsWorkload(ctx, &wg, c)
+		go func() {
+			err := startIdleXactsWorkload(ctx, &wg, c, log)
+			if err != nil {
+				log.Errorf("idle transactions workload failed: %s", err)
+			}
+		}()
 	}
 
 	if c.rollbacks {
-		log.Info().Msg("start rollbacks workload")
+		log.Info("start rollbacks workload")
 		wg.Add(1)
 		go startRollbacksWorkload(ctx, &wg, c)
 	}
 
 	if c.waitXacts {
-		log.Info().Msg("start wait xacts workload")
+		log.Info("start wait xacts workload")
 		wg.Add(1)
 		go startWaitxactsWorkload(ctx, &wg, c)
 	}
 
 	if c.deadlocks {
-		log.Info().Msg("start deadlocks workload")
+		log.Info("start deadlocks workload")
 		wg.Add(1)
 		go startDeadlocksWorkload(ctx, &wg, c)
 	}
 
 	if c.tempFiles {
-		log.Info().Msg("start temp files workload")
+		log.Info("start temp files workload")
 		wg.Add(1)
 		go startTempFilesWorkload(ctx, &wg, c)
 	}
 
 	if c.terminate {
-		log.Info().Msg("start terminate backends workload")
+		log.Info("start terminate backends workload")
 		wg.Add(1)
 		go startTerminateWorkload(ctx, &wg, c)
 	}
 
 	if c.failconns {
-		log.Info().Msg("start failconns backends workload")
+		log.Info("start failconns backends workload")
 		wg.Add(1)
 		go startFailconnsWorkload(ctx, &wg, c)
 	}
@@ -100,24 +105,22 @@ func runApplication(ctx context.Context, c config, log zerolog.Logger) error {
 }
 
 // startIdleXactsWorkload start generating workload with idle transactions.
-func startIdleXactsWorkload(ctx context.Context, wg *sync.WaitGroup, c config) {
+func startIdleXactsWorkload(ctx context.Context, wg *sync.WaitGroup, c config, log log.Logger) error {
 	defer wg.Done()
 
-	workload, err := idlexacts.NewWorkload(idlexacts.Config{
-		Conninfo:   c.postgresConninfo,
-		Jobs:       c.jobs,
-		NaptimeMin: c.idleXactsNaptimeMin,
-		NaptimeMax: c.idleXactsNaptimeMax,
-	})
+	workload, err := idlexacts.NewWorkload(
+		idlexacts.Config{
+			Conninfo:   c.postgresConninfo,
+			Jobs:       c.jobs,
+			NaptimeMin: c.idleXactsNaptimeMin,
+			NaptimeMax: c.idleXactsNaptimeMax,
+		}, log,
+	)
 	if err != nil {
-		fmt.Printf("idle transactions workload failed: %s\n", err)
-		return
+		return err
 	}
 
-	err = workload.Run(ctx)
-	if err != nil {
-		fmt.Printf("idle transactions workload failed: %s\n", err)
-	}
+	return workload.Run(ctx)
 }
 
 func startRollbacksWorkload(ctx context.Context, wg *sync.WaitGroup, c config) {

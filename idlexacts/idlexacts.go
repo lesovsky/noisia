@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/lesovsky/noisia"
 	"github.com/lesovsky/noisia/db"
+	"github.com/lesovsky/noisia/log"
 	"github.com/lesovsky/noisia/targeting"
 	"math/rand"
 	"time"
@@ -42,15 +43,16 @@ func (c Config) validate() error {
 // workload implements noisia.Workload interface.
 type workload struct {
 	config Config
+	logger log.Logger
 }
 
 // NewWorkload creates a new workload with specified config.
-func NewWorkload(config Config) (noisia.Workload, error) {
+func NewWorkload(config Config, logger log.Logger) (noisia.Workload, error) {
 	err := config.validate()
 	if err != nil {
 		return nil, err
 	}
-	return &workload{config}, nil
+	return &workload{config, logger}, nil
 }
 
 // Run connects to Postgres and starts the workload.
@@ -73,11 +75,11 @@ func (w *workload) Run(ctx context.Context) error {
 		return err
 	}
 
-	return startLoop(ctx, pool, tables, w.config.Jobs, w.config.NaptimeMin, w.config.NaptimeMax)
+	return startLoop(ctx, w.logger, pool, tables, w.config.Jobs, w.config.NaptimeMin, w.config.NaptimeMax)
 }
 
 // startLoop starts workload using passed settings and database connection.
-func startLoop(ctx context.Context, pool db.DB, tables []string, jobs uint16, minTime, maxTime time.Duration) error {
+func startLoop(ctx context.Context, log log.Logger, pool db.DB, tables []string, jobs uint16, minTime, maxTime time.Duration) error {
 	rand.Seed(time.Now().UnixNano())
 
 	// Increment maxTime up to 1 due to rand.Int63n() never return max value.
@@ -94,23 +96,26 @@ func startLoop(ctx context.Context, pool db.DB, tables []string, jobs uint16, mi
 				table := selectRandomTable(tables)
 				naptime := time.Duration(rand.Int63n(maxTime.Nanoseconds()-minTime.Nanoseconds()) + minTime.Nanoseconds())
 
-				startSingleIdleXact(ctx, pool, table, naptime)
+				err := startSingleIdleXact(ctx, pool, table, naptime)
+				if err != nil {
+					log.Warnf("start idle xact failed: %s", err)
+				}
 
 				// When worker finishes, read from the channel to allow starting another worker.
 				<-guard
 			}()
 		case <-ctx.Done():
-			//log.Info("exit signaled, stop idle transaction workload")
+
 			return nil
 		}
 	}
 }
 
 // startSingleIdleXact starts transaction and goes sleeping for specified amount of time.
-func startSingleIdleXact(ctx context.Context, pool db.DB, table string, naptime time.Duration) {
+func startSingleIdleXact(ctx context.Context, pool db.DB, table string, naptime time.Duration) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return
+		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -118,18 +123,19 @@ func startSingleIdleXact(ctx context.Context, pool db.DB, table string, naptime 
 	// transaction will be rolled back and temp table will be dropped. Also, any errors could
 	// be ignored, because in this case transaction (aborted) also stay idle.
 	if table != "" {
-		_ = createTempTable(tx, table)
+		err = createTempTable(tx, table)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Stop execution only if context has been done or naptime interval is timed out.
 	timer := time.NewTimer(naptime)
 	select {
 	case <-ctx.Done():
-		return
+		return nil
 	case <-timer.C:
-		// Don't care about errors.
-		_ = tx.Rollback(ctx)
-		return
+		return nil
 	}
 }
 

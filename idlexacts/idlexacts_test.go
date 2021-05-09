@@ -3,6 +3,7 @@ package idlexacts
 import (
 	"context"
 	"github.com/lesovsky/noisia/db"
+	"github.com/lesovsky/noisia/log"
 	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"
@@ -42,7 +43,7 @@ func TestWorkload_Run(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	w, err := NewWorkload(config)
+	w, err := NewWorkload(config, log.NewDefaultLogger())
 	assert.NoError(t, err)
 	err = w.Run(ctx)
 	assert.NoError(t, err)
@@ -59,7 +60,17 @@ func Test_startLoop(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	assert.NoError(t, startLoop(ctx, pool, []string{""}, 2, 1, 2))
+	assert.NoError(t, startLoop(ctx, log.NewDefaultLogger(), pool, []string{""}, 2, 1, 2))
+}
+
+func Test_startSingleIdleXact(t *testing.T) {
+	pool, err := db.NewTestDB()
+	assert.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	assert.NoError(t, startSingleIdleXact(ctx, pool, "pg_class", 10*time.Millisecond))
+	assert.NoError(t, startSingleIdleXact(ctx, pool, "", 10*time.Millisecond))
 }
 
 func Test_selectRandomTable(t *testing.T) {
@@ -76,11 +87,14 @@ func Test_selectRandomTable(t *testing.T) {
 	}
 }
 
-func Test_startSingleIdleXact(t *testing.T) {
+func Test_createTempTable(t *testing.T) {
 	pool, err := db.NewTestDB()
 	assert.NoError(t, err)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	startSingleIdleXact(ctx, pool, "", 10*time.Millisecond)
+	tx, err := pool.Begin(context.Background())
+	assert.NoError(t, err)
+
+	assert.NoError(t, createTempTable(tx, "pg_class"))
+
+	assert.NoError(t, tx.Rollback(context.Background()))
 }
