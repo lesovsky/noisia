@@ -43,7 +43,7 @@ func TestWorkload_Run(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	w, err := NewWorkload(config, log.NewDefaultLogger())
+	w, err := NewWorkload(config, log.NewDefaultLogger("info"))
 	assert.NoError(t, err)
 	err = w.Run(ctx)
 	assert.NoError(t, err)
@@ -60,7 +60,7 @@ func Test_startLoop(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	assert.NoError(t, startLoop(ctx, log.NewDefaultLogger(), pool, []string{""}, 2, 1, 2))
+	assert.NoError(t, startLoop(ctx, log.NewDefaultLogger("info"), pool, []string{""}, 2, 1, 2))
 }
 
 func Test_startSingleIdleXact(t *testing.T) {

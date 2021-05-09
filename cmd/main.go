@@ -18,6 +18,7 @@ var (
 func main() {
 	var (
 		showVersion           = kingpin.Flag("version", "show version and exit").Default().Bool()
+		logLevel              = kingpin.Flag("log-level", "Log level: info, warn, error").Default("info").Envar("NOISIA_LOG_LEVEL").Enum("info", "warn", "error")
 		postgresConninfo      = kingpin.Flag("conninfo", "Postgres connection string (DSN or URL), must be specified explicitly").Default("").Envar("NOISIA_POSTGRES_CONNINFO").String()
 		jobs                  = kingpin.Flag("jobs", "Run workload with specified number of workers").Default("1").Envar("NOISIA_JOBS").Uint16()
 		duration              = kingpin.Flag("duration", "Duration of tests").Default("10s").Envar("NOISIA_DURATION").Duration()
@@ -53,7 +54,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	logger := log.NewDefaultLogger()
+	logger := log.NewDefaultLogger(*logLevel)
 
 	config := config{
 		logger:                logger,

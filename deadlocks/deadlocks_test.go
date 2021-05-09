@@ -36,7 +36,7 @@ func TestWorkload_Run(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	w, err := NewWorkload(config, log.NewDefaultLogger())
+	w, err := NewWorkload(config, log.NewDefaultLogger("info"))
 	assert.NoError(t, err)
 	err = w.Run(ctx)
 	assert.NoError(t, err)

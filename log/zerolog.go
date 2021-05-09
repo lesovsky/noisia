@@ -6,14 +6,30 @@ import (
 	"time"
 )
 
+const (
+	levelInfo  = "info"
+	levelWarn  = "warn"
+	levelError = "error"
+)
+
 // defaultLogger implements Logger interface using zerolog.Logger.
 type defaultLogger struct {
 	logger zerolog.Logger
 }
 
 // NewDefaultLogger creates new default logger.
-func NewDefaultLogger() Logger {
-	l := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}).Level(zerolog.InfoLevel).With().Timestamp().Logger()
+func NewDefaultLogger(level string) Logger {
+	var zerologLevel zerolog.Level
+	switch level {
+	case levelInfo:
+		zerologLevel = zerolog.InfoLevel
+	case levelWarn:
+		zerologLevel = zerolog.WarnLevel
+	case levelError:
+		zerologLevel = zerolog.ErrorLevel
+	}
+
+	l := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}).Level(zerologLevel).With().Timestamp().Logger()
 
 	return &defaultLogger{logger: l}
 }

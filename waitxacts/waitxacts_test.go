@@ -43,7 +43,7 @@ func TestWorkload_Run(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	w, err := NewWorkload(config, log.NewDefaultLogger())
+	w, err := NewWorkload(config, log.NewDefaultLogger("info"))
 	assert.NoError(t, err)
 	err = w.Run(ctx)
 	assert.Nil(t, err)
@@ -60,7 +60,7 @@ func Test_startLoop(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	assert.NoError(t, startLoop(ctx, log.NewDefaultLogger(), pool, []string{"noisia_test_1"}, 2, 10*time.Millisecond, 50*time.Millisecond))
+	assert.NoError(t, startLoop(ctx, log.NewDefaultLogger("info"), pool, []string{"noisia_test_1"}, 2, 10*time.Millisecond, 50*time.Millisecond))
 
 	_, _, err = pool.Exec(context.Background(), "DROP TABLE noisia_test_1")
 	assert.NoError(t, err)
