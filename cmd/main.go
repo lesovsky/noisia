@@ -93,11 +93,9 @@ func main() {
 	doExit := make(chan error, 2)
 
 	// Run signal listener.
-	wg.Add(1)
 	go func() {
 		doExit <- listenSignals()
 		cancel()
-		wg.Done()
 	}()
 
 	// Run application.
