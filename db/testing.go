@@ -2,18 +2,12 @@ package db
 
 import (
 	"context"
-	"github.com/jackc/pgx/v4/pgxpool"
 )
 
+// TestConninfo defines connection string to test database.
 const TestConninfo = "host=postgres user=noisia database=noisia_fixtures"
 
+// NewTestDB creates connection for test database.
 func NewTestDB() (DB, error) {
-	pool, err := pgxpool.Connect(context.Background(), TestConninfo)
-	if err != nil {
-		return nil, err
-	}
-
-	return &PostgresDB{
-		pool: pool,
-	}, nil
+	return NewPostgresDB(context.Background(), TestConninfo)
 }

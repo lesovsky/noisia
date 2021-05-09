@@ -15,7 +15,14 @@ type PostgresDB struct {
 
 // NewPostgresDB creates new database connections pool.
 func NewPostgresDB(ctx context.Context, conninfo string) (DB, error) {
-	pool, err := pgxpool.Connect(ctx, conninfo)
+	config, err := pgxpool.ParseConfig(conninfo)
+	if err != nil {
+		return nil, err
+	}
+
+	config.ConnConfig.RuntimeParams["application_name"] = "noisia"
+
+	pool, err := pgxpool.ConnectConfig(ctx, config)
 	if err != nil {
 		return nil, err
 	}
