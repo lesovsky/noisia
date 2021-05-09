@@ -114,6 +114,17 @@ func Connect(ctx context.Context, connString string) (Conn, error) {
 	}, nil
 }
 
+// Begin opens transaction in database and returns transaction object.
+func (c *PostgresConn) Begin(ctx context.Context) (Tx, error) {
+	tx, err := c.conn.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &PostgresTx{
+		tx: tx,
+	}, nil
+}
+
 // Exec executes query expression and returns number of affected rows and resulting tag.
 func (c *PostgresConn) Exec(ctx context.Context, sql string, args ...interface{}) (int64, string, error) {
 	tag, err := c.conn.Exec(ctx, sql, args...)
