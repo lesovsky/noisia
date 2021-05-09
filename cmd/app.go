@@ -55,10 +55,11 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 		log.Info("start idle transactions workload")
 		wg.Add(1)
 		go func() {
-			err := startIdleXactsWorkload(ctx, &wg, c, log)
+			err := startIdleXactsWorkload(ctx, c, log)
 			if err != nil {
 				log.Errorf("idle transactions workload failed: %s", err)
 			}
+			wg.Done()
 		}()
 	}
 
@@ -66,10 +67,11 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 		log.Info("start rollbacks workload")
 		wg.Add(1)
 		go func() {
-			err := startRollbacksWorkload(ctx, &wg, c, log)
+			err := startRollbacksWorkload(ctx, c, log)
 			if err != nil {
 				log.Errorf("rollbacks workload failed: %s", err)
 			}
+			wg.Done()
 		}()
 	}
 
@@ -77,10 +79,11 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 		log.Info("start wait xacts workload")
 		wg.Add(1)
 		go func() {
-			err := startWaitxactsWorkload(ctx, &wg, c, log)
+			err := startWaitxactsWorkload(ctx, c, log)
 			if err != nil {
 				log.Errorf("wait xacts workload failed: %s", err)
 			}
+			wg.Done()
 		}()
 	}
 
@@ -88,10 +91,11 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 		log.Info("start deadlocks workload")
 		wg.Add(1)
 		go func() {
-			err := startDeadlocksWorkload(ctx, &wg, c, log)
+			err := startDeadlocksWorkload(ctx, c, log)
 			if err != nil {
 				log.Errorf("deadlocks workload failed: %s", err)
 			}
+			wg.Done()
 		}()
 	}
 
@@ -99,10 +103,11 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 		log.Info("start temp files workload")
 		wg.Add(1)
 		go func() {
-			err := startTempFilesWorkload(ctx, &wg, c, log)
+			err := startTempFilesWorkload(ctx, c, log)
 			if err != nil {
 				log.Errorf("temp files workload failed: %s", err)
 			}
+			wg.Done()
 		}()
 	}
 
@@ -110,10 +115,11 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 		log.Info("start terminate backends workload")
 		wg.Add(1)
 		go func() {
-			err := startTerminateWorkload(ctx, &wg, c, log)
+			err := startTerminateWorkload(ctx, c, log)
 			if err != nil {
 				log.Errorf("terminate backends workload failed: %s", err)
 			}
+			wg.Done()
 		}()
 	}
 
@@ -121,10 +127,11 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 		log.Info("start failconns backends workload")
 		wg.Add(1)
 		go func() {
-			err := startFailconnsWorkload(ctx, &wg, c, log)
+			err := startFailconnsWorkload(ctx, c, log)
 			if err != nil {
 				log.Errorf("failconns backends workload failed: %s", err)
 			}
+			wg.Done()
 		}()
 	}
 
@@ -134,9 +141,7 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 }
 
 // startIdleXactsWorkload start generating workload with idle transactions.
-func startIdleXactsWorkload(ctx context.Context, wg *sync.WaitGroup, c config, logger log.Logger) error {
-	defer wg.Done()
-
+func startIdleXactsWorkload(ctx context.Context, c config, logger log.Logger) error {
 	workload, err := idlexacts.NewWorkload(
 		idlexacts.Config{
 			Conninfo:   c.postgresConninfo,
@@ -152,9 +157,7 @@ func startIdleXactsWorkload(ctx context.Context, wg *sync.WaitGroup, c config, l
 	return workload.Run(ctx)
 }
 
-func startRollbacksWorkload(ctx context.Context, wg *sync.WaitGroup, c config, logger log.Logger) error {
-	defer wg.Done()
-
+func startRollbacksWorkload(ctx context.Context, c config, logger log.Logger) error {
 	workload, err := rollbacks.NewWorkload(
 		rollbacks.Config{
 			Conninfo: c.postgresConninfo,
@@ -170,9 +173,7 @@ func startRollbacksWorkload(ctx context.Context, wg *sync.WaitGroup, c config, l
 	return workload.Run(ctx)
 }
 
-func startWaitxactsWorkload(ctx context.Context, wg *sync.WaitGroup, c config, logger log.Logger) error {
-	defer wg.Done()
-
+func startWaitxactsWorkload(ctx context.Context, c config, logger log.Logger) error {
 	workload, err := waitxacts.NewWorkload(
 		waitxacts.Config{
 			Conninfo:    c.postgresConninfo,
@@ -189,9 +190,7 @@ func startWaitxactsWorkload(ctx context.Context, wg *sync.WaitGroup, c config, l
 	return workload.Run(ctx)
 }
 
-func startDeadlocksWorkload(ctx context.Context, wg *sync.WaitGroup, c config, logger log.Logger) error {
-	defer wg.Done()
-
+func startDeadlocksWorkload(ctx context.Context, c config, logger log.Logger) error {
 	workload, err := deadlocks.NewWorkload(
 		deadlocks.Config{
 			Conninfo: c.postgresConninfo,
@@ -205,9 +204,7 @@ func startDeadlocksWorkload(ctx context.Context, wg *sync.WaitGroup, c config, l
 	return workload.Run(ctx)
 }
 
-func startTempFilesWorkload(ctx context.Context, wg *sync.WaitGroup, c config, logger log.Logger) error {
-	defer wg.Done()
-
+func startTempFilesWorkload(ctx context.Context, c config, logger log.Logger) error {
 	workload, err := tempfiles.NewWorkload(
 		tempfiles.Config{
 			Conninfo:    c.postgresConninfo,
@@ -223,9 +220,7 @@ func startTempFilesWorkload(ctx context.Context, wg *sync.WaitGroup, c config, l
 	return workload.Run(ctx)
 }
 
-func startTerminateWorkload(ctx context.Context, wg *sync.WaitGroup, c config, logger log.Logger) error {
-	defer wg.Done()
-
+func startTerminateWorkload(ctx context.Context, c config, logger log.Logger) error {
 	workload, err := terminate.NewWorkload(
 		terminate.Config{
 			Conninfo:             c.postgresConninfo,
@@ -246,9 +241,7 @@ func startTerminateWorkload(ctx context.Context, wg *sync.WaitGroup, c config, l
 	return workload.Run(ctx)
 }
 
-func startFailconnsWorkload(ctx context.Context, wg *sync.WaitGroup, c config, logger log.Logger) error {
-	defer wg.Done()
-
+func startFailconnsWorkload(ctx context.Context, c config, logger log.Logger) error {
 	workload, err := failconns.NewWorkload(
 		failconns.Config{
 			Conninfo: c.postgresConninfo,
