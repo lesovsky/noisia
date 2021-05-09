@@ -75,10 +75,9 @@ func (w *workload) Run(ctx context.Context) error {
 		// run workers only when it's possible to write into channel (channel is limited by number of jobs).
 		case guard <- struct{}{}:
 			go func() {
-				// Use dedicated error here to avoid collisions with error of outer code.
-				derr := executeDeadlock(ctx, w.logger, w.config.Conninfo)
-				if derr != nil {
-					w.logger.Warnf("deadlock failed: %s", err)
+				err := executeDeadlock(ctx, w.logger, w.config.Conninfo)
+				if err != nil {
+					w.logger.Warnf("reproduce deadlock failed: %s", err)
 				}
 
 				// when worker finished, read from the channel to allow starting another workers
@@ -127,24 +126,28 @@ func executeDeadlock(ctx context.Context, log log.Logger, conninfo string) error
 
 	var wg sync.WaitGroup
 
-	// Use goroutine-owned errors to avoid data race.
-	// Probability of errors extremely high here, and writing
-	// to the shared error object will cause data race panic.
-
 	wg.Add(1)
 	go func() {
-		xact1err := runUpdateXact(context.Background(), conn1, id1, id2)
-		if xact1err != nil {
-			log.Warnf("update failed: %s", err)
+		err := runUpdateXact(context.Background(), conn1, id1, id2)
+		if err != nil {
+			if err.Error() == "ERROR: deadlock detected (SQLSTATE 40P01)" {
+				log.Info("deadlock detected")
+			} else {
+				log.Warnf("update failed: %s", err)
+			}
 		}
 		wg.Done()
 	}()
 
 	wg.Add(1)
 	go func() {
-		xact2err := runUpdateXact(context.Background(), conn2, id2, id1)
-		if xact2err != nil {
-			log.Warnf("update failed: %s", err)
+		err := runUpdateXact(context.Background(), conn2, id2, id1)
+		if err != nil {
+			if err.Error() == "ERROR: deadlock detected (SQLSTATE 40P01)" {
+				log.Info("deadlock detected")
+			} else {
+				log.Warnf("update failed: %s", err)
+			}
 		}
 		wg.Done()
 	}()
@@ -163,17 +166,17 @@ func runUpdateXact(ctx context.Context, conn db.Conn, id1 int, id2 int) error {
 	// Update row #1
 	_, _, err = tx.Exec(ctx, "UPDATE _noisia_deadlocks_workload SET payload = md5(random()::text) WHERE id = $1", id1)
 	if err != nil {
-		return nil
+		return err
 	}
 
-	// This time is sufficient to allow capturing locks in concurrent xacts.
+	// This time is sufficient to allow capturing locks in concurrent transaction.
 	time.Sleep(10 * time.Millisecond)
 
 	// Update row #2
-	_, _, _ = tx.Exec(ctx, "UPDATE _noisia_deadlocks_workload SET payload = md5(random()::text) WHERE id = $1", id2)
+	_, _, err = tx.Exec(ctx, "UPDATE _noisia_deadlocks_workload SET payload = md5(random()::text) WHERE id = $1", id2)
+	if err != nil {
+		return err
+	}
 
-	// Don't care about errors.
-	_ = tx.Commit(ctx)
-
-	return nil
+	return tx.Commit(ctx)
 }
