@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"github.com/lesovsky/noisia/deadlocks"
 	"github.com/lesovsky/noisia/failconns"
 	"github.com/lesovsky/noisia/idlexacts"
@@ -121,7 +120,12 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 	if c.failconns {
 		log.Info("start failconns backends workload")
 		wg.Add(1)
-		go startFailconnsWorkload(ctx, &wg, c)
+		go func() {
+			err := startFailconnsWorkload(ctx, &wg, c, log)
+			if err != nil {
+				log.Errorf("failconns backends workload failed: %s", err)
+			}
+		}()
 	}
 
 	wg.Wait()
@@ -242,19 +246,17 @@ func startTerminateWorkload(ctx context.Context, wg *sync.WaitGroup, c config, l
 	return workload.Run(ctx)
 }
 
-func startFailconnsWorkload(ctx context.Context, wg *sync.WaitGroup, c config) {
+func startFailconnsWorkload(ctx context.Context, wg *sync.WaitGroup, c config, logger log.Logger) error {
 	defer wg.Done()
 
-	workload, err := failconns.NewWorkload(failconns.Config{
-		Conninfo: c.postgresConninfo,
-	})
+	workload, err := failconns.NewWorkload(
+		failconns.Config{
+			Conninfo: c.postgresConninfo,
+		}, logger,
+	)
 	if err != nil {
-		fmt.Printf("failconns workload failed: %s\n", err)
-		return
+		return err
 	}
 
-	err = workload.Run(ctx)
-	if err != nil {
-		fmt.Printf("failconns workload failed: %s\n", err)
-	}
+	return workload.Run(ctx)
 }

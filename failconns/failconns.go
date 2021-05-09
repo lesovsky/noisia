@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/lesovsky/noisia"
 	"github.com/lesovsky/noisia/db"
+	"github.com/lesovsky/noisia/log"
 	"time"
 )
 
@@ -23,16 +24,17 @@ func (c Config) validate() error {
 // workload implements noisia.Workload interface.
 type workload struct {
 	config Config
+	logger log.Logger
 }
 
 // NewWorkload creates a new workload with specified config.
-func NewWorkload(config Config) (noisia.Workload, error) {
+func NewWorkload(config Config, logger log.Logger) (noisia.Workload, error) {
 	err := config.validate()
 	if err != nil {
 		return nil, err
 	}
 
-	return &workload{config}, nil
+	return &workload{config, logger}, nil
 }
 
 // Run method connects to Postgres and starts the workload.
@@ -50,6 +52,8 @@ func (w *workload) Run(ctx context.Context) error {
 		case <-timer.C:
 			c, err := db.Connect(ctx, w.config.Conninfo)
 			if err != nil {
+				w.logger.Info(err.Error())
+
 				// if connect has failed, increase interval between connects
 				interval = interval * 2
 			} else {
