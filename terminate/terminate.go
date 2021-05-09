@@ -13,8 +13,8 @@ import (
 type Config struct {
 	// Conninfo defines connections string used for connecting to Postgres.
 	Conninfo string
-	// Interval defines a single round in seconds during which the number of backends/queries should be terminated (accordingly to rate).
-	Interval uint16
+	// Interval defines an interval of single round during which the number of backends/queries should be terminated (accordingly to rate).
+	Interval time.Duration
 	// Rate defines a rate of how many backends should be terminated (or queries canceled) per interval.
 	Rate uint16
 	// SoftMode defines to use pg_cancel_backend() instead of pg_terminate_backend().
@@ -33,8 +33,8 @@ type Config struct {
 
 // validate method checks workload configuration settings.
 func (c Config) validate() error {
-	if c.Interval < 1 {
-		return fmt.Errorf("terminate interval must be greater than zero")
+	if c.Interval < 10*time.Millisecond {
+		return fmt.Errorf("terminate interval must be greater than 10ms")
 	}
 
 	if c.Rate < 1 {
@@ -68,14 +68,14 @@ func (w *workload) Run(ctx context.Context) error {
 	defer pool.Close()
 
 	// calculate inter-query interval for per-second rate throttling
-	interval := time.Duration(1000000000*int64(w.config.Interval)/int64(w.config.Rate)) * time.Nanosecond
-	timer := time.NewTimer(interval)
+	naptime := w.config.Interval / time.Duration(w.config.Rate)
+	timer := time.NewTimer(naptime)
 
 	for {
 		err = signalProcess(ctx, pool, w.config)
 		select {
 		case <-timer.C:
-			timer.Reset(interval)
+			timer.Reset(naptime)
 			continue
 		case <-ctx.Done():
 			return nil

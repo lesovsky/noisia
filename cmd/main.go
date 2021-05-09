@@ -37,7 +37,7 @@ func main() {
 		tempFilesScaleFactor  = kingpin.Flag("temp-files.scale-factor", "Test data multiplier, 1 = 1000 rows").Default("10").Envar("NOISIA_TEMP_FILES_SCALE_FACTOR").Uint16()
 		terminate             = kingpin.Flag("terminate", "Run terminate workload").Default("false").Envar("NOISIA_TERMINATE").Bool()
 		terminateRate         = kingpin.Flag("terminate.rate", "Number of backends/queries terminate per interval").Default("1").Envar("NOISIA_TERMINATE_RATE").Uint16()
-		terminateInterval     = kingpin.Flag("terminate.interval", "Time interval of single round, in seconds").Default("1").Envar("NOISIA_TERMINATE_INTERVAL").Uint16()
+		terminateInterval     = kingpin.Flag("terminate.interval", "Time interval of single round of termination").Default("1s").Envar("NOISIA_TERMINATE_INTERVAL").Duration()
 		terminateSoftMode     = kingpin.Flag("terminate.soft-mode", "Use queries cancel mode").Default("false").Envar("NOISIA_TERMINATE_SOFT_MODE").Bool()
 		terminateIgnoreSystem = kingpin.Flag("terminate.ignore-system", "Don't terminate postgres system processes").Default("false").Envar("NOISIA_TERMINATE_IGNORE_SYSTEM").Bool()
 		terminateClientAddr   = kingpin.Flag("terminate.client-addr", "Terminate backends created from specific client addresses").Default("").Envar("NOISIA_TERMINATE_CLIENT_ADDR").String()

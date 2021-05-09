@@ -14,9 +14,9 @@ func TestConfig_validate(t *testing.T) {
 		valid  bool
 		config Config
 	}{
-		{valid: true, config: Config{Interval: 1, Rate: 1}},
-		{valid: false, config: Config{Interval: 0, Rate: 1}},
-		{valid: false, config: Config{Interval: 1, Rate: 0}},
+		{valid: true, config: Config{Interval: 1 * time.Second, Rate: 1}},
+		{valid: false, config: Config{Interval: 9 * time.Millisecond, Rate: 1}},
+		{valid: false, config: Config{Interval: 1 * time.Second, Rate: 0}},
 	}
 
 	for _, tc := range testcases {
@@ -32,7 +32,7 @@ func TestWorkload_Run(t *testing.T) {
 	config := Config{
 		Conninfo:             db.TestConninfo,
 		Rate:                 1,
-		Interval:             1,
+		Interval:             1 * time.Second,
 		IgnoreSystemBackends: true,
 		SoftMode:             false,
 	}
