@@ -73,6 +73,10 @@ func (w *workload) Run(ctx context.Context) error {
 
 	for {
 		err = signalProcess(ctx, pool, w.config)
+		if err != nil {
+			w.logger.Warnf("failed terminate: %s", err)
+		}
+
 		select {
 		case <-timer.C:
 			timer.Reset(naptime)
