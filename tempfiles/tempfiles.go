@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/lesovsky/noisia"
 	"github.com/lesovsky/noisia/db"
+	"github.com/lesovsky/noisia/log"
 	"time"
 )
 
@@ -49,17 +50,18 @@ func (c Config) validate() error {
 // workload implements noisia.Workload interface.
 type workload struct {
 	config Config
+	logger log.Logger
 	pool   db.DB
 }
 
 // NewWorkload creates a new workload with specified config.
-func NewWorkload(config Config) (noisia.Workload, error) {
+func NewWorkload(config Config, logger log.Logger) (noisia.Workload, error) {
 	err := config.validate()
 	if err != nil {
 		return nil, err
 	}
 
-	return &workload{config, nil}, nil
+	return &workload{config, logger, nil}, nil
 }
 
 // Run connects to Postgres and starts the workload.
@@ -72,12 +74,18 @@ func (w *workload) Run(ctx context.Context) error {
 	defer w.pool.Close()
 
 	// Prepare temp tables and fixtures for workload.
-	if err := w.prepare(ctx); err != nil {
+	err = w.prepare(ctx)
+	if err != nil {
 		return err
 	}
 
 	// Cleanup in the end.
-	defer func() { _ = w.cleanup() }()
+	defer func() {
+		err = w.cleanup()
+		if err != nil {
+			w.logger.Warnf("temp files cleanup failed: %s", err)
+		}
+	}()
 
 	// calculate inter-query interval for rate throttling
 	interval := 1000000000 / int64(w.config.Rate)
@@ -90,13 +98,16 @@ func (w *workload) Run(ctx context.Context) error {
 		case guard <- struct{}{}:
 			go func() {
 				// Don't care about errors.
-				_, _, _ = pool.Exec(ctx, querySelectData)
+				_, _, workerErr := pool.Exec(ctx, querySelectData)
+				if workerErr != nil {
+					w.logger.Warnf("query failed: %s", err)
+				}
+
 				time.Sleep(time.Duration(interval) * time.Nanosecond)
 
 				<-guard
 			}()
 		case <-ctx.Done():
-			//log.Info("exit signaled, stop temp files workload")
 			return nil
 		}
 	}

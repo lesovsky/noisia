@@ -99,7 +99,12 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 	if c.tempFiles {
 		log.Info("start temp files workload")
 		wg.Add(1)
-		go startTempFilesWorkload(ctx, &wg, c)
+		go func() {
+			err := startTempFilesWorkload(ctx, &wg, c, log)
+			if err != nil {
+				log.Errorf("temp files workload failed: %s", err)
+			}
+		}()
 	}
 
 	if c.terminate {
@@ -191,24 +196,22 @@ func startDeadlocksWorkload(ctx context.Context, wg *sync.WaitGroup, c config, l
 	return workload.Run(ctx)
 }
 
-func startTempFilesWorkload(ctx context.Context, wg *sync.WaitGroup, c config) {
+func startTempFilesWorkload(ctx context.Context, wg *sync.WaitGroup, c config, logger log.Logger) error {
 	defer wg.Done()
 
-	workload, err := tempfiles.NewWorkload(tempfiles.Config{
-		Conninfo:    c.postgresConninfo,
-		Jobs:        c.jobs,
-		Rate:        c.tempFilesRate,
-		ScaleFactor: c.tempFilesScaleFactor,
-	})
+	workload, err := tempfiles.NewWorkload(
+		tempfiles.Config{
+			Conninfo:    c.postgresConninfo,
+			Jobs:        c.jobs,
+			Rate:        c.tempFilesRate,
+			ScaleFactor: c.tempFilesScaleFactor,
+		}, logger,
+	)
 	if err != nil {
-		fmt.Printf("temp files workload failed: %s\n", err)
-		return
+		return err
 	}
 
-	err = workload.Run(ctx)
-	if err != nil {
-		fmt.Printf("temp files workload failed: %s\n", err)
-	}
+	return workload.Run(ctx)
 }
 
 func startTerminateWorkload(ctx context.Context, wg *sync.WaitGroup, c config) {
