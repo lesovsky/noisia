@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/lesovsky/noisia"
 	"github.com/lesovsky/noisia/db"
+	"github.com/lesovsky/noisia/log"
 	"github.com/lesovsky/noisia/targeting"
 	"math/rand"
 	"time"
@@ -44,17 +45,18 @@ func (c Config) validate() error {
 // workload implements noisia.Workload interface.
 type workload struct {
 	config Config
+	logger log.Logger
 	pool   db.DB
 }
 
 // NewWorkload creates a new workload with specified config.
-func NewWorkload(config Config) (noisia.Workload, error) {
+func NewWorkload(config Config, logger log.Logger) (noisia.Workload, error) {
 	err := config.validate()
 	if err != nil {
 		return nil, err
 	}
 
-	return &workload{config, nil}, nil
+	return &workload{config, logger, nil}, nil
 }
 
 // Run connects to Postgres and starts the workload.
@@ -78,17 +80,23 @@ func (w *workload) Run(ctx context.Context) error {
 	// If there are no tables, or user requests fixture test, then prepare stuff for fixture test.
 	if w.config.Fixture || len(tables) == 0 {
 		// Prepare temp tables and fixtures for workload.
-		if err := w.prepare(ctx); err != nil {
+		err = w.prepare(ctx)
+		if err != nil {
 			return err
 		}
 
 		tables = []string{"_noisia_waitxacts_workload"}
 
 		// Cleanup in the end.
-		defer func() { _ = w.cleanup() }()
+		defer func() {
+			err = w.cleanup()
+			if err != nil {
+				w.logger.Warnf("wait xacts cleanup failed: %s", err)
+			}
+		}()
 	}
 
-	return startLoop(ctx, pool, tables, w.config.Jobs, w.config.LocktimeMin, w.config.LocktimeMax)
+	return startLoop(ctx, w.logger, pool, tables, w.config.Jobs, w.config.LocktimeMin, w.config.LocktimeMax)
 }
 
 // prepare method creates fixture table for workload.
@@ -109,8 +117,7 @@ func (w *workload) prepare(ctx context.Context) error {
 		return err
 	}
 
-	_ = tx.Commit(ctx)
-	return nil
+	return tx.Commit(ctx)
 }
 
 // cleanup perform fixtures cleanup after workload has been done.
@@ -124,7 +131,7 @@ func (w *workload) cleanup() error {
 }
 
 // startLoop start workload loop until context timeout exceeded.
-func startLoop(ctx context.Context, pool db.DB, tables []string, jobs uint16, minTime, maxTime time.Duration) error {
+func startLoop(ctx context.Context, log log.Logger, pool db.DB, tables []string, jobs uint16, minTime, maxTime time.Duration) error {
 	rand.Seed(time.Now().UnixNano())
 
 	// Increment maxTime up to 1 second due to rand.Int63n() never return max value.
@@ -140,7 +147,10 @@ func startLoop(ctx context.Context, pool db.DB, tables []string, jobs uint16, mi
 				table := selectRandomTable(tables)
 				naptime := time.Duration(rand.Int63n(maxTime.Nanoseconds()-minTime.Nanoseconds()) + minTime.Nanoseconds())
 
-				lockTable(ctx, pool, table, naptime)
+				err := lockTable(ctx, pool, table, naptime)
+				if err != nil {
+					log.Warnf("lock table failed: %s", err)
+				}
 
 				// when worker finished, read from the channel to allow starting another workers
 				<-guard
@@ -152,26 +162,26 @@ func startLoop(ctx context.Context, pool db.DB, tables []string, jobs uint16, mi
 }
 
 // lockTable tries to lock specified table for 'idle' amount of time.
-func lockTable(ctx context.Context, pool db.DB, table string, idle time.Duration) {
+func lockTable(ctx context.Context, pool db.DB, table string, idle time.Duration) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return
+		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	q := fmt.Sprintf("LOCK TABLE %s IN ACCESS EXCLUSIVE MODE", table)
 	_, _, err = tx.Exec(ctx, q)
 	if err != nil {
-		return
+		return err
 	}
 
 	// Stop execution only if context has been done or idle interval is timed out
 	timer := time.NewTimer(idle)
 	select {
 	case <-ctx.Done():
-		return
+		return nil
 	case <-timer.C:
-		return
+		return nil
 	}
 }
 

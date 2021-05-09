@@ -77,7 +77,12 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 	if c.waitXacts {
 		log.Info("start wait xacts workload")
 		wg.Add(1)
-		go startWaitxactsWorkload(ctx, &wg, c)
+		go func() {
+			err := startWaitxactsWorkload(ctx, &wg, c, log)
+			if err != nil {
+				log.Errorf("wait xacts workload failed: %s", err)
+			}
+		}()
 	}
 
 	if c.deadlocks {
@@ -146,25 +151,23 @@ func startRollbacksWorkload(ctx context.Context, wg *sync.WaitGroup, c config, l
 	return workload.Run(ctx)
 }
 
-func startWaitxactsWorkload(ctx context.Context, wg *sync.WaitGroup, c config) {
+func startWaitxactsWorkload(ctx context.Context, wg *sync.WaitGroup, c config, logger log.Logger) error {
 	defer wg.Done()
 
-	workload, err := waitxacts.NewWorkload(waitxacts.Config{
-		Conninfo:    c.postgresConninfo,
-		Jobs:        c.jobs,
-		Fixture:     c.waitXactsFixture,
-		LocktimeMin: c.waitXactsLocktimeMin,
-		LocktimeMax: c.waitXactsLocktimeMax,
-	})
+	workload, err := waitxacts.NewWorkload(
+		waitxacts.Config{
+			Conninfo:    c.postgresConninfo,
+			Jobs:        c.jobs,
+			Fixture:     c.waitXactsFixture,
+			LocktimeMin: c.waitXactsLocktimeMin,
+			LocktimeMax: c.waitXactsLocktimeMax,
+		}, logger,
+	)
 	if err != nil {
-		fmt.Printf("waiting xacts workload failed: %s\n", err)
-		return
+		return err
 	}
 
-	err = workload.Run(ctx)
-	if err != nil {
-		fmt.Printf("waiting xacts workload failed: %s\n", err)
-	}
+	return workload.Run(ctx)
 }
 
 func startDeadlocksWorkload(ctx context.Context, wg *sync.WaitGroup, c config) {
