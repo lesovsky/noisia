@@ -66,7 +66,13 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 	if c.rollbacks {
 		log.Info("start rollbacks workload")
 		wg.Add(1)
-		go startRollbacksWorkload(ctx, &wg, c)
+		wg.Add(1)
+		go func() {
+			err := startRollbacksWorkload(ctx, &wg, c, log)
+			if err != nil {
+				log.Errorf("rollbacks workload failed: %s", err)
+			}
+		}()
 	}
 
 	if c.waitXacts {
@@ -105,7 +111,7 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 }
 
 // startIdleXactsWorkload start generating workload with idle transactions.
-func startIdleXactsWorkload(ctx context.Context, wg *sync.WaitGroup, c config, log log.Logger) error {
+func startIdleXactsWorkload(ctx context.Context, wg *sync.WaitGroup, c config, logger log.Logger) error {
 	defer wg.Done()
 
 	workload, err := idlexacts.NewWorkload(
@@ -114,7 +120,7 @@ func startIdleXactsWorkload(ctx context.Context, wg *sync.WaitGroup, c config, l
 			Jobs:       c.jobs,
 			NaptimeMin: c.idleXactsNaptimeMin,
 			NaptimeMax: c.idleXactsNaptimeMax,
-		}, log,
+		}, logger,
 	)
 	if err != nil {
 		return err
@@ -123,24 +129,22 @@ func startIdleXactsWorkload(ctx context.Context, wg *sync.WaitGroup, c config, l
 	return workload.Run(ctx)
 }
 
-func startRollbacksWorkload(ctx context.Context, wg *sync.WaitGroup, c config) {
+func startRollbacksWorkload(ctx context.Context, wg *sync.WaitGroup, c config, logger log.Logger) error {
 	defer wg.Done()
 
-	workload, err := rollbacks.NewWorkload(rollbacks.Config{
-		Conninfo: c.postgresConninfo,
-		Jobs:     c.jobs,
-		MinRate:  c.rollbacksMinRate,
-		MaxRate:  c.rollbacksMaxRate,
-	})
+	workload, err := rollbacks.NewWorkload(
+		rollbacks.Config{
+			Conninfo: c.postgresConninfo,
+			Jobs:     c.jobs,
+			MinRate:  c.rollbacksMinRate,
+			MaxRate:  c.rollbacksMaxRate,
+		}, logger,
+	)
 	if err != nil {
-		fmt.Printf("rollbacks workload failed: %s\n", err)
-		return
+		return err
 	}
 
-	err = workload.Run(ctx)
-	if err != nil {
-		fmt.Printf("rollbacks workload failed: %s\n", err)
-	}
+	return workload.Run(ctx)
 }
 
 func startWaitxactsWorkload(ctx context.Context, wg *sync.WaitGroup, c config) {

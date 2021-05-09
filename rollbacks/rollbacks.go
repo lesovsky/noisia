@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/lesovsky/noisia"
 	"github.com/lesovsky/noisia/db"
+	"github.com/lesovsky/noisia/log"
 	"math/rand"
 	"sync"
 	"time"
@@ -42,21 +43,21 @@ func (c Config) validate() error {
 // workload implements noisia.Workload interface.
 type workload struct {
 	config Config
+	logger log.Logger
 }
 
 // NewWorkload creates a new workload with specified config.
-func NewWorkload(config Config) (noisia.Workload, error) {
+func NewWorkload(config Config, logger log.Logger) (noisia.Workload, error) {
 	err := config.validate()
 	if err != nil {
 		return nil, err
 	}
 
-	return &workload{config}, nil
+	return &workload{config, logger}, nil
 }
 
 // Run method connects to Postgres and starts the workload.
 func (w *workload) Run(ctx context.Context) error {
-	fmt.Println(w.config.MinRate, w.config.MaxRate)
 	var wg sync.WaitGroup
 
 	for i := 0; i < int(w.config.Jobs); i++ {
@@ -64,15 +65,16 @@ func (w *workload) Run(ctx context.Context) error {
 		// creates a temporary table used during workload.
 		conn, err := db.Connect(ctx, w.config.Conninfo)
 		if err != nil {
-			// TODO: expose errors outside
-			continue
+			return err
 		}
 
 		// Start working loop.
 		wg.Add(1)
 		go func() {
-			_, _, _ = startLoop(ctx, conn, w.config.MinRate, w.config.MaxRate)
-			// TODO: expose errors outside if any
+			_, _, err = startLoop(ctx, conn, w.config.MinRate, w.config.MaxRate)
+			if err != nil {
+				w.logger.Warnf("start rollbacks worker failed: %s", err)
+			}
 
 			_ = conn.Close()
 			wg.Done()
@@ -147,7 +149,7 @@ func createTempTable(ctx context.Context, conn db.Conn) (string, error) {
 // newErrQuery returns random erroneous query with arguments.
 func newErrQuery(n int, table string) (string, []interface{}) {
 	// Total number of available erroneous queries.
-	total := 15
+	const total = 15
 
 	rand.Seed(time.Now().UnixNano())
 
