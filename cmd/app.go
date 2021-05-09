@@ -110,7 +110,12 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 	if c.terminate {
 		log.Info("start terminate backends workload")
 		wg.Add(1)
-		go startTerminateWorkload(ctx, &wg, c)
+		go func() {
+			err := startTerminateWorkload(ctx, &wg, c, log)
+			if err != nil {
+				log.Errorf("terminate backends workload failed: %s", err)
+			}
+		}()
 	}
 
 	if c.failconns {
@@ -214,29 +219,27 @@ func startTempFilesWorkload(ctx context.Context, wg *sync.WaitGroup, c config, l
 	return workload.Run(ctx)
 }
 
-func startTerminateWorkload(ctx context.Context, wg *sync.WaitGroup, c config) {
+func startTerminateWorkload(ctx context.Context, wg *sync.WaitGroup, c config, logger log.Logger) error {
 	defer wg.Done()
 
-	workload, err := terminate.NewWorkload(terminate.Config{
-		Conninfo:             c.postgresConninfo,
-		Interval:             c.terminateInterval,
-		Rate:                 c.terminateRate,
-		SoftMode:             c.terminateSoftMode,
-		IgnoreSystemBackends: c.terminateIgnoreSystem,
-		ClientAddr:           c.terminateClientAddr,
-		User:                 c.terminateUser,
-		Database:             c.terminateDatabase,
-		ApplicationName:      c.terminateAppName,
-	})
+	workload, err := terminate.NewWorkload(
+		terminate.Config{
+			Conninfo:             c.postgresConninfo,
+			Interval:             c.terminateInterval,
+			Rate:                 c.terminateRate,
+			SoftMode:             c.terminateSoftMode,
+			IgnoreSystemBackends: c.terminateIgnoreSystem,
+			ClientAddr:           c.terminateClientAddr,
+			User:                 c.terminateUser,
+			Database:             c.terminateDatabase,
+			ApplicationName:      c.terminateAppName,
+		}, logger,
+	)
 	if err != nil {
-		fmt.Printf("terminate backends workload failed: %s\n", err)
-		return
+		return err
 	}
 
-	err = workload.Run(ctx)
-	if err != nil {
-		fmt.Printf("terminate backends workload failed: %s\n", err)
-	}
+	return workload.Run(ctx)
 }
 
 func startFailconnsWorkload(ctx context.Context, wg *sync.WaitGroup, c config) {

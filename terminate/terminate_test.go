@@ -3,6 +3,7 @@ package terminate
 import (
 	"context"
 	"github.com/lesovsky/noisia/db"
+	"github.com/lesovsky/noisia/log"
 	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"
@@ -30,7 +31,7 @@ func TestConfig_validate(t *testing.T) {
 func TestWorkload_Run(t *testing.T) {
 	config := Config{
 		Conninfo:             db.TestConninfo,
-		Rate:                 4,
+		Rate:                 1,
 		Interval:             1,
 		IgnoreSystemBackends: true,
 		SoftMode:             false,
@@ -39,7 +40,7 @@ func TestWorkload_Run(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	w, err := NewWorkload(config)
+	w, err := NewWorkload(config, log.NewDefaultLogger())
 	assert.NoError(t, err)
 	err = w.Run(ctx)
 	assert.Nil(t, err)

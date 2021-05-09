@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/lesovsky/noisia"
 	"github.com/lesovsky/noisia/db"
+	"github.com/lesovsky/noisia/log"
 	"time"
 )
 
@@ -45,17 +46,17 @@ func (c Config) validate() error {
 
 type workload struct {
 	config Config
-	pool   db.DB
+	logger log.Logger
 }
 
 // NewWorkload creates a new workload with specified config.
-func NewWorkload(config Config) (noisia.Workload, error) {
+func NewWorkload(config Config, logger log.Logger) (noisia.Workload, error) {
 	err := config.validate()
 	if err != nil {
 		return nil, err
 	}
 
-	return &workload{config, nil}, nil
+	return &workload{config, logger}, nil
 }
 
 // Run method connects to Postgres and starts the workload.
@@ -64,15 +65,14 @@ func (w *workload) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	w.pool = pool
-	defer w.pool.Close()
+	defer pool.Close()
 
-	// calculate inter-query interval for rate throttling
+	// calculate inter-query interval for per-second rate throttling
 	interval := time.Duration(1000000000*int64(w.config.Interval)/int64(w.config.Rate)) * time.Nanosecond
 	timer := time.NewTimer(interval)
 
 	for {
-		w.signalProcess(ctx)
+		err = signalProcess(ctx, pool, w.config)
 		select {
 		case <-timer.C:
 			timer.Reset(interval)
@@ -84,11 +84,16 @@ func (w *workload) Run(ctx context.Context) error {
 }
 
 // signalProcess sends cancel/terminate query to Postgres.
-func (w *workload) signalProcess(ctx context.Context) {
-	q := buildQuery(w.config)
+func signalProcess(ctx context.Context, pool db.DB, c Config) error {
+	q := buildQuery(c)
 
 	// Don't care about errors
-	_, _, _ = w.pool.Exec(ctx, q)
+	_, _, err := pool.Exec(ctx, q)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // buildQuery creates cancel/terminate query depending on passed config.
