@@ -70,6 +70,10 @@ Running workloads could impact on already running workload produced by other app
 | terminate  | **Yes**  |
 | waitxacts  | **Yes**  |
 
+#### Contribution
+- PR's are welcome.
+- Ideas could be proposed [here](https://github.com/lesovsky/noisia/discussions)
+- About grammar issues or typos let me know [here](https://github.com/lesovsky/noisia/discussions/8).
 
 #### License
 BSD-3. See [LICENSE](LICENSE) for more details.
