@@ -46,6 +46,8 @@ func main() {
 		terminateDatabase     = kingpin.Flag("terminate.database", "Terminate backends connected to specific database").Default("").Envar("NOISIA_TERMINATE_DATABASE").String()
 		terminateAppName      = kingpin.Flag("terminate.appname", "Terminate backends created from specific applications").Default("").Envar("NOISIA_TERMINATE_APPNAME").String()
 		failconns             = kingpin.Flag("failconns", "Run connections exhaustion workload").Default("false").Envar("NOISIA_FAILCONNS").Bool()
+		forkconns             = kingpin.Flag("forkconns", "Run queries in dedicated connections").Default("false").Envar("NOISIA_FORKCONNS").Bool()
+		forkconnsRate         = kingpin.Flag("forkconns.rate", "Number of connections made per second").Default("1").Envar("NOISIA_FORKCONNS_RATE").Uint16()
 	)
 	kingpin.Parse()
 
@@ -85,6 +87,8 @@ func main() {
 		terminateDatabase:     *terminateDatabase,
 		terminateAppName:      *terminateAppName,
 		failconns:             *failconns,
+		forkconns:             *forkconns,
+		forkconnsRate:         *forkconnsRate,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

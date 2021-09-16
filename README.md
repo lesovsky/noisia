@@ -12,6 +12,7 @@
 - `temporary files` - queries that produce on-disk temporary files due to lack of `work_mem`.
 - `terminate backends` - terminate random backends (or queries) using `pg_terminate_backend()`, `pg_cancel_backend()`.
 - `failed connections` - exhaust all available connections (other clients unable to connect to Postgres) 
+- `fork connections` - execute single, short query in a dedicated connection (lead to excessive forking of Postgres backends).
 - ...see built-in help for more runtime options.
 
 #### Disclaimer
@@ -64,6 +65,7 @@ Running workloads could impact on already running workload produced by other app
 | :---         |     :---:      |
 | deadlocks  | No  |
 | failconns  | **Yes**  |
+| forkconns  | **Yes**  |
 | idlexacts  | **Yes**  |
 | rollbacks  | No  |
 | tempfiles  | No  |

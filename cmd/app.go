@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/lesovsky/noisia/deadlocks"
 	"github.com/lesovsky/noisia/failconns"
+	"github.com/lesovsky/noisia/forkconns"
 	"github.com/lesovsky/noisia/idlexacts"
 	"github.com/lesovsky/noisia/log"
 	"github.com/lesovsky/noisia/rollbacks"
@@ -43,6 +44,8 @@ type config struct {
 	terminateDatabase     string
 	terminateAppName      string
 	failconns             bool
+	forkconns             bool
+	forkconnsRate         uint16
 }
 
 func runApplication(ctx context.Context, c config, log log.Logger) error {
@@ -130,6 +133,18 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 			err := startFailconnsWorkload(ctx, c, log)
 			if err != nil {
 				log.Errorf("failconns backends workload failed: %s", err)
+			}
+			wg.Done()
+		}()
+	}
+
+	if c.forkconns {
+		log.Info("start fork connections workload")
+		wg.Add(1)
+		go func() {
+			err := startForkconnsWorkload(ctx, c, log)
+			if err != nil {
+				log.Errorf("fork connections workload failed: %s", err)
 			}
 			wg.Done()
 		}()
@@ -245,6 +260,21 @@ func startFailconnsWorkload(ctx context.Context, c config, logger log.Logger) er
 	workload, err := failconns.NewWorkload(
 		failconns.Config{
 			Conninfo: c.postgresConninfo,
+		}, logger,
+	)
+	if err != nil {
+		return err
+	}
+
+	return workload.Run(ctx)
+}
+
+func startForkconnsWorkload(ctx context.Context, c config, logger log.Logger) error {
+	workload, err := forkconns.NewWorkload(
+		forkconns.Config{
+			Conninfo: c.postgresConninfo,
+			Rate:     c.forkconnsRate,
+			Jobs:     c.jobs,
 		}, logger,
 	)
 	if err != nil {
