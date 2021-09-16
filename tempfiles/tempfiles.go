@@ -1,3 +1,16 @@
+// Copyright 2021 The Noisia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+// Package tempfiles defines implementation of workload which executes queries
+// which create on-disk temporary files due to lack of work_mem.
+//
+// Before start the workload, create a working wide table and fill it with random
+// data. Size of the table depends on passed Config.ScaleFactor. When table is
+// ready, spawn goroutines (exact number depends on Config.Jobs). Each goroutine
+// executes query which creates temp file. When query is finished, goroutine
+// sleeps and finishes. Sleep interval depends on Config.Rate and calculated on
+// per-second manner.
 package tempfiles
 
 import (
@@ -18,9 +31,9 @@ random()::text,random()::text,random()::text,random()::text,random()::text,rando
 	querySelectData = `SELECT a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z FROM _noisia_tempfiles_workload GROUP BY z,y,x,w,v,u,t,s,r,q,p,o,n,m,l,k,j,i,h,g,f,e,d,c,b,a ORDER BY a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z DESC`
 )
 
-// Config defines configuration settings for temp files workload
+// Config defines configuration settings for temp files workload.
 type Config struct {
-	// Conninfo defines connections string used for connecting to Postgres.
+	// Conninfo defines connection string used for connecting to Postgres.
 	Conninfo string
 	// Jobs defines how many workers should be created for producing temp files.
 	Jobs uint16
@@ -113,6 +126,7 @@ func (w *workload) Run(ctx context.Context) error {
 	}
 }
 
+// prepare method create working table and fill it with random data.
 func (w *workload) prepare(ctx context.Context) error {
 	_, _, err := w.pool.Exec(ctx, queryCreateTable)
 	if err != nil {
@@ -125,6 +139,7 @@ func (w *workload) prepare(ctx context.Context) error {
 	return nil
 }
 
+// cleanup method drops working table.
 func (w *workload) cleanup() error {
 	_, _, err := w.pool.Exec(context.Background(), "DROP TABLE IF EXISTS _noisia_tempfiles_workload")
 	if err != nil {

@@ -1,3 +1,22 @@
+// Copyright 2021 The Noisia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+// Package deadlocks defines implementation of workload which creates deadlocks
+// between several concurrent transactions, which finally leads to Postgres have
+// to resolve the deadlock and terminate an one participant of the deadlock.
+//
+// Before starting the workload, some prepare steps have to be made - a special
+// working table should be created. When the workload is finished this table should
+// be dropped. For more info see prepare and cleanup methods.
+// When working table is created, the workload is allowed to start. The number of
+// necessary workers could be started (accordingly to Config.Jobs). Each worker calls
+// a deadlock routine in a separate goroutine. Deadlock routine inserts to unique rows
+// into the working table and than starts two transactions which tries to make a
+// cross-update of these rows. Obviously, this update fails with a deadlock, which
+// forces Postgres to resolve it. Postgres resolves the deadlock by terminating a
+// single participant of the deadlock. As a result the second survived transaction
+// can continue its work and return.
 package deadlocks
 
 import (
@@ -13,7 +32,7 @@ import (
 
 // Config defines configuration settings for deadlocks workload.
 type Config struct {
-	// Conninfo defines connections string used for connecting to Postgres.
+	// Conninfo defines connection string used for connecting to Postgres.
 	Conninfo string
 	// Jobs defines how many workers should be created for producing deadlocks.
 	Jobs uint16
@@ -89,6 +108,7 @@ func (w *workload) Run(ctx context.Context) error {
 	}
 }
 
+// prepare method creates working table required for deadlocks workload.
 func (w *workload) prepare(ctx context.Context) error {
 	_, _, err := w.pool.Exec(ctx, "CREATE TABLE IF NOT EXISTS _noisia_deadlocks_workload (id bigint, payload text)")
 	if err != nil {
@@ -97,6 +117,7 @@ func (w *workload) prepare(ctx context.Context) error {
 	return nil
 }
 
+// cleanup method drops working table after workload has been done.
 func (w *workload) cleanup() error {
 	_, _, err := w.pool.Exec(context.Background(), "DROP TABLE IF EXISTS _noisia_deadlocks_workload")
 	if err != nil {
@@ -105,6 +126,8 @@ func (w *workload) cleanup() error {
 	return nil
 }
 
+// executeDeadlock make two database connections, inserts necessary rows to the working table
+// and executes transactions which update the rows and collides in a deadlock.
 func executeDeadlock(ctx context.Context, log log.Logger, conninfo string) error {
 	conn1, err := db.Connect(ctx, conninfo)
 	if err != nil {
@@ -156,6 +179,7 @@ func executeDeadlock(ctx context.Context, log log.Logger, conninfo string) error
 	return nil
 }
 
+// runUpdateXact receives rows IDs and tries to update these rows inside the transaction.
 func runUpdateXact(ctx context.Context, conn db.Conn, id1 int, id2 int) error {
 	tx, err := conn.Begin(ctx)
 	if err != nil {

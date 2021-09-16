@@ -1,3 +1,17 @@
+// Copyright 2021 The Noisia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+// Package rollbacks defines implementation of workload which issues definitely
+// wrong queries which are doomed to fail and as a result pg_stat_database.xact_rollback
+// counter is incremented.
+//
+// For creating the workload, start required number of goroutines (depends on
+// Config.Jobs). Each goroutine creates a temporary table. The table is used in
+// queries to bypass parser errors related to querying non-existent table. Next,
+// start a rollbacks loop. In the loop, a random query is selected and issued.
+// The query obviously fails. Next query executes after interval which depends
+// on Config.MinRate and Config.MaxRate.
 package rollbacks
 
 import (
@@ -13,7 +27,7 @@ import (
 
 // Config defines configuration settings for rollbacks workload.
 type Config struct {
-	// Conninfo defines connections string used for connecting to Postgres.
+	// Conninfo defines connection string used for connecting to Postgres.
 	Conninfo string
 	// Jobs defines how many workers should be created for producing rollbacks.
 	Jobs uint16

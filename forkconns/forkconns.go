@@ -1,3 +1,18 @@
+// Copyright 2021 The Noisia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+// Package forkconns defines implementation of workload which creates many
+// short-lived database connections which forces Postgres to fork children
+// processes. Postgres is based on fork-based process model and creating a
+// lot of children processes is not cheap - it requires CPU and memory
+// resources, initializing and allocating internal resources, etc.
+//
+// For creating a workload, workers are spawned. Each worker in a loop, with
+// defined interval makes a connection to Postgres and perform simple query
+// to pg_class relation and then close the connection. The number of workers
+// depends on Config.Jobs. Interval between creating connections is based on
+// Config.Rate and calculated on per-second manner.
 package forkconns
 
 import (

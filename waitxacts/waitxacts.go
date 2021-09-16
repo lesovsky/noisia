@@ -1,3 +1,22 @@
+// Copyright 2021 The Noisia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+// Package waitxacts defines implementation of workload which locks tables and
+// blocks queries. Blocked queries have to wait until lock is released.
+//
+// Before starting the workload looking for the tables with the most UPDATE and
+// DELETE operations. Suppose there is a concurrent workload is running on those
+// tables. Start goroutines in a loop (where number of goroutines depends on
+// Config.Jobs). Each goroutine select random table from the list and set EXCLUSIVE
+// lock. During the time the table is locked, all activity related to this table
+// is stuck in waiting until lock is released. Goroutine release the lock after
+// random time between Config.LocktimeMin and Config.LocktimeMax.
+//
+// There is also fixture mode exists, for scenarios with no concurrent activity, or
+// when no tables found. In this mode, special working table is created, which is
+// used for locks. But at this time executing queries which would block are not
+// implemented. TODO.
 package waitxacts
 
 import (
@@ -13,7 +32,7 @@ import (
 
 // Config defines configuration settings for waiting transactions workload
 type Config struct {
-	// Conninfo defines connections string used for connecting to Postgres.
+	// Conninfo defines connection string used for connecting to Postgres.
 	Conninfo string
 	// Jobs defines how many workers should be created for producing waiting transactions.
 	Jobs uint16
