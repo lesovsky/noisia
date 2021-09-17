@@ -31,8 +31,7 @@ type config struct {
 	waitXactsLocktimeMax  time.Duration
 	deadlocks             bool
 	tempFiles             bool
-	tempFilesRate         uint16
-	tempFilesScaleFactor  uint16
+	tempFilesRate         float64
 	terminate             bool
 	terminateInterval     time.Duration
 	terminateRate         uint16
@@ -220,10 +219,9 @@ func startDeadlocksWorkload(ctx context.Context, c config, logger log.Logger) er
 func startTempFilesWorkload(ctx context.Context, c config, logger log.Logger) error {
 	workload, err := tempfiles.NewWorkload(
 		tempfiles.Config{
-			Conninfo:    c.postgresConninfo,
-			Jobs:        c.jobs,
-			Rate:        c.tempFilesRate,
-			ScaleFactor: c.tempFilesScaleFactor,
+			Conninfo: c.postgresConninfo,
+			Jobs:     c.jobs,
+			Rate:     c.tempFilesRate,
 		}, logger,
 	)
 	if err != nil {

@@ -32,9 +32,8 @@ func main() {
 		waitXactsLocktimeMin  = kingpin.Flag("wait-xacts.locktime-min", "Min transactions locking time").Default("5s").Envar("NOISIA_WAIT_XACTS_LOCKTIME_MIN").Duration()
 		waitXactsLocktimeMax  = kingpin.Flag("wait-xacts.locktime-max", "Max transactions locking time").Default("20s").Envar("NOISIA_WAIT_XACTS_LOCKTIME_MAX").Duration()
 		deadlocks             = kingpin.Flag("deadlocks", "Run deadlocks workload").Default("false").Envar("NOISIA_DEADLOCKS").Bool()
-		tempFiles             = kingpin.Flag("temp-files", "Run temporary files workload").Default("false").Envar("NOISIA_TEMP_FILES").Bool()
-		tempFilesRate         = kingpin.Flag("temp-files.rate", "Number of queries per second (per worker)").Default("10").Envar("NOISIA_TEMP_FILES_RATE").Uint16()
-		tempFilesScaleFactor  = kingpin.Flag("temp-files.scale-factor", "Test data multiplier, 1 = 1000 rows").Default("10").Envar("NOISIA_TEMP_FILES_SCALE_FACTOR").Uint16()
+		tempFiles             = kingpin.Flag("tempfiles", "Run temporary files workload").Default("false").Envar("NOISIA_TEMP_FILES").Bool()
+		tempFilesRate         = kingpin.Flag("tempfiles.rate", "Number of queries per second (per worker)").Default("1").Envar("NOISIA_TEMP_FILES_RATE").Float64()
 		terminate             = kingpin.Flag("terminate", "Run terminate workload").Default("false").Envar("NOISIA_TERMINATE").Bool()
 		terminateRate         = kingpin.Flag("terminate.rate", "Number of backends/queries terminate per interval").Default("1").Envar("NOISIA_TERMINATE_RATE").Uint16()
 		terminateInterval     = kingpin.Flag("terminate.interval", "Time interval of single round of termination").Default("1s").Envar("NOISIA_TERMINATE_INTERVAL").Duration()
@@ -74,7 +73,6 @@ func main() {
 		deadlocks:             *deadlocks,
 		tempFiles:             *tempFiles,
 		tempFilesRate:         *tempFilesRate,
-		tempFilesScaleFactor:  *tempFilesScaleFactor,
 		terminate:             *terminate,
 		terminateRate:         *terminateRate,
 		terminateInterval:     *terminateInterval,
