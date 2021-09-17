@@ -64,7 +64,7 @@ func Test_runWorker(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	assert.NoError(t, runWorker(ctx, log.NewDefaultLogger("info"), Config{Rate: 2}))
+	assert.NoError(t, runWorker(ctx, log.NewDefaultLogger("error"), Config{Rate: 2, Conninfo: db.TestConninfo}))
 }
 
 func Test_startLoop(t *testing.T) {
