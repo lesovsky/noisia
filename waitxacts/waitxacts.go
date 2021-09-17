@@ -15,8 +15,8 @@
 //
 // There is also fixture mode exists, for scenarios with no concurrent activity, or
 // when no tables found. In this mode, special working table is created, which is
-// used for locks. But at this time executing queries which would block are not
-// implemented. TODO.
+// used for locks. Worker use two goroutines, first used for locking the table, the
+// second used for issuing query to locked table.
 package waitxacts
 
 import (
@@ -27,6 +27,7 @@ import (
 	"github.com/lesovsky/noisia/log"
 	"github.com/lesovsky/noisia/targeting"
 	"math/rand"
+	"sync"
 	"time"
 )
 
@@ -46,8 +47,8 @@ type Config struct {
 
 // validate method checks workload configuration settings.
 func (c Config) validate() error {
-	if c.Jobs < 2 {
-		return fmt.Errorf("jobs must be greater than 1")
+	if c.Jobs < 1 {
+		return fmt.Errorf("jobs must be greater than 0")
 	}
 
 	if c.LocktimeMin == 0 || c.LocktimeMax == 0 {
@@ -96,9 +97,14 @@ func (w *workload) Run(ctx context.Context) error {
 		return err
 	}
 
-	// If there are no tables, or user requests fixture test, then prepare stuff for fixture test.
-	if w.config.Fixture || len(tables) == 0 {
-		// Prepare temp tables and fixtures for workload.
+	// Enable fixture mode, if no tables found.
+	if len(tables) == 0 {
+		w.config.Fixture = true
+	}
+
+	// Prepare stuff for fixture mode if enabled.
+	if w.config.Fixture {
+		// Prepare working table.
 		err = w.prepare(ctx)
 		if err != nil {
 			return err
@@ -110,12 +116,12 @@ func (w *workload) Run(ctx context.Context) error {
 		defer func() {
 			err = w.cleanup()
 			if err != nil {
-				w.logger.Warnf("wait xacts cleanup failed: %s", err)
+				w.logger.Warnf("waiting transactions cleanup failed: %s", err)
 			}
 		}()
 	}
 
-	return startLoop(ctx, w.logger, pool, tables, w.config.Jobs, w.config.LocktimeMin, w.config.LocktimeMax)
+	return startLoop(ctx, w.logger, pool, tables, w.config)
 }
 
 // prepare method creates fixture table for workload.
@@ -150,49 +156,82 @@ func (w *workload) cleanup() error {
 }
 
 // startLoop start workload loop until context timeout exceeded.
-func startLoop(ctx context.Context, log log.Logger, pool db.DB, tables []string, jobs uint16, minTime, maxTime time.Duration) error {
+func startLoop(ctx context.Context, log log.Logger, pool db.DB, tables []string, config Config) error {
+	// Initialize random, used for calculating lock duration.
 	rand.Seed(time.Now().UnixNano())
 
 	// Increment maxTime up to 1 second due to rand.Int63n() never return max value.
-	maxTime++
+	minTime, maxTime := config.LocktimeMin, config.LocktimeMax+1
 
-	// Keep specified number of workers using channel - run new workers until there is any free slot
-	guard := make(chan struct{}, jobs)
+	// guardCh defines worker queue - run new workers only there is any free slot
+	guardCh := make(chan struct{}, config.Jobs)
+
+	// lockedCh defines notification channel which tells when table is locked
+	lockedCh := make(chan struct{})
+
 	for {
 		select {
 		// run workers only when it's possible to write into channel (channel is limited by number of jobs)
-		case guard <- struct{}{}:
-			go func() {
-				table := selectRandomTable(tables)
-				naptime := time.Duration(rand.Int63n(maxTime.Nanoseconds()-minTime.Nanoseconds()) + minTime.Nanoseconds())
+		case guardCh <- struct{}{}:
+			var wg sync.WaitGroup
+			table := selectRandomTable(tables)
+			naptime := time.Duration(rand.Int63n(maxTime.Nanoseconds()-minTime.Nanoseconds()) + minTime.Nanoseconds())
 
-				err := lockTable(ctx, pool, table, naptime)
-				if err != nil {
+			// Start goroutine which locks target for calculated nap time.
+			wg.Add(1)
+			go func() {
+				err := lockTable(ctx, pool, table, naptime, lockedCh)
+				if err != nil && ctx.Err() == nil {
 					log.Warnf("lock table failed: %s", err)
 				}
-
-				// when worker finished, read from the channel to allow starting another workers
-				<-guard
+				wg.Done()
 			}()
+
+			// Waiting for signal when table is locked (needed only in fixtures mode).
+			<-lockedCh
+
+			// If fixture mode is enabled, issue our own query which becomes blocked.
+			if config.Fixture {
+				wg.Add(1)
+				go func() {
+					_, _, err := pool.Exec(ctx, fmt.Sprintf("SELECT * FROM %s", table))
+					if err != nil && ctx.Err() == nil {
+						log.Warnf("query failed: %s", err)
+					}
+					wg.Done()
+				}()
+			}
+
+			// When work is finished, read from the channel to allow starting another iteration of work.
+			wg.Wait()
+			<-guardCh
 		case <-ctx.Done():
+			close(guardCh)
+			close(lockedCh)
 			return nil
 		}
 	}
 }
 
-// lockTable tries to lock specified table for 'idle' amount of time.
-func lockTable(ctx context.Context, pool db.DB, table string, idle time.Duration) error {
+// lockTable tries to lock specified table for 'idle' amount of time. In case of errors
+// send notify to lockedCh to avoid stuck of reading goroutine.
+func lockTable(ctx context.Context, pool db.DB, table string, idle time.Duration, lockedCh chan struct{}) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return err
+		lockedCh <- struct{}{}
+		return fmt.Errorf("begin: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	q := fmt.Sprintf("LOCK TABLE %s IN ACCESS EXCLUSIVE MODE", table)
 	_, _, err = tx.Exec(ctx, q)
 	if err != nil {
-		return err
+		lockedCh <- struct{}{}
+		return fmt.Errorf("lock: %v", err)
 	}
+
+	// Table is locked, send a signal to query channel to allow make a query to locked table.
+	lockedCh <- struct{}{}
 
 	// Stop execution only if context has been done or idle interval is timed out
 	timer := time.NewTimer(idle)
