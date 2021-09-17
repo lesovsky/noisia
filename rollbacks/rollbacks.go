@@ -90,8 +90,8 @@ func (w *workload) Run(ctx context.Context) error {
 }
 
 // runWorker connects to the database and start rollback loop.
-func runWorker(ctx context.Context, logger log.Logger, config Config) error {
-	logger.Info("start worker")
+func runWorker(ctx context.Context, log log.Logger, config Config) error {
+	log.Info("start rollback worker")
 
 	conn, err := db.Connect(ctx, config.Conninfo)
 	if err != nil {
@@ -100,10 +100,10 @@ func runWorker(ctx context.Context, logger log.Logger, config Config) error {
 
 	commits, rollbacks, err := startLoop(ctx, conn, config.Rate)
 	if err != nil {
-		logger.Warnf("rollbacks worker failed: %s", err)
+		log.Warnf("rollbacks worker failed: %s", err)
 	}
 
-	logger.Infof("rollbacks worker finished: %d rollbacks, %d commits", rollbacks, commits)
+	log.Infof("rollbacks worker finished: %d rollbacks, %d commits", rollbacks, commits)
 	return nil
 }
 
