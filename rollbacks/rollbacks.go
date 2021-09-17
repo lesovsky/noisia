@@ -3,15 +3,18 @@
 // license that can be found in the LICENSE file.
 
 // Package rollbacks defines implementation of workload which issues definitely
-// wrong queries which are doomed to fail and as a result pg_stat_database.xact_rollback
+// invalid queries which are doomed to fail and as a result pg_stat_database.xact_rollback
 // counter is incremented.
 //
-// For creating the workload, start required number of goroutines (depends on
-// Config.Jobs). Each goroutine creates a temporary table. The table is used in
-// queries to bypass parser errors related to querying non-existent table. Next,
-// start a rollbacks loop. In the loop, a random query is selected and issued.
-// The query obviously fails. Next query executes after interval which depends
-// on Config.MinRate and Config.MaxRate.
+// For creating the workload, start required number of workers (number of goroutines
+// depends on Config.Jobs). Each worker creates a temporary table. The table is used
+// in queries to bypass parser errors related to querying non-existent table. Next,
+// rollbacks loop is started. In the loop, a random query is selected and issued.
+// The query obviously fails. Next query is executed accordingly to rate specified
+// in Config.Rate.
+// Workload duration is controlled by context created outside and passed to Run method.
+// Context is passed to each worker and used in the worker's loop. When context expires
+// loop is stopped.
 package rollbacks
 
 import (
@@ -20,6 +23,7 @@ import (
 	"github.com/lesovsky/noisia"
 	"github.com/lesovsky/noisia/db"
 	"github.com/lesovsky/noisia/log"
+	"golang.org/x/time/rate"
 	"math/rand"
 	"sync"
 	"time"
@@ -31,10 +35,8 @@ type Config struct {
 	Conninfo string
 	// Jobs defines how many workers should be created for producing rollbacks.
 	Jobs uint16
-	// MinRate defines minimum approximate target rate for produced rollbacks per second (per single worker).
-	MinRate uint16
-	// MaxRate defines maximum approximate target rate for produced rollbacks per second (per single worker).
-	MaxRate uint16
+	// Rate defines rollbacks rate produced per second (per single worker).
+	Rate float64
 }
 
 // validate method checks workload configuration settings.
@@ -43,12 +45,8 @@ func (c Config) validate() error {
 		return fmt.Errorf("jobs must be greater than zero")
 	}
 
-	if c.MinRate == 0 || c.MaxRate == 0 {
-		return fmt.Errorf("min and max rate must be greater than zero")
-	}
-
-	if c.MinRate > c.MaxRate {
-		return fmt.Errorf("min rate must be less or equal to max rate")
+	if c.Rate <= 0 {
+		return fmt.Errorf("rate must be positive")
 	}
 
 	return nil
@@ -70,27 +68,19 @@ func NewWorkload(config Config, logger log.Logger) (noisia.Workload, error) {
 	return &workload{config, logger}, nil
 }
 
-// Run method connects to Postgres and starts the workload.
+// Run method starts necessary number of workers and waiting until they finish.
 func (w *workload) Run(ctx context.Context) error {
+	workers := int(w.config.Jobs)
+
 	var wg sync.WaitGroup
 
-	for i := 0; i < int(w.config.Jobs); i++ {
-		// Create connection for each worker. Pool is not used because each worker
-		// creates a temporary table used during workload.
-		conn, err := db.Connect(ctx, w.config.Conninfo)
-		if err != nil {
-			return err
-		}
-
-		// Start working loop.
-		wg.Add(1)
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
 		go func() {
-			_, _, err = startLoop(ctx, conn, w.config.MinRate, w.config.MaxRate)
+			err := runWorker(ctx, w.logger, w.config)
 			if err != nil {
-				w.logger.Warnf("start rollbacks worker failed: %s", err)
+				w.logger.Warnf("start rollbacks worker failed: %s, continue", err)
 			}
-
-			_ = conn.Close()
 			wg.Done()
 		}()
 	}
@@ -99,50 +89,53 @@ func (w *workload) Run(ctx context.Context) error {
 	return nil
 }
 
-// startLoop start workload loop until context timeout exceeded.
-func startLoop(ctx context.Context, conn db.Conn, minRate, maxRate uint16) (int, int, error) {
+// runWorker connects to the database and start rollback loop.
+func runWorker(ctx context.Context, logger log.Logger, config Config) error {
+	logger.Info("start worker")
+
+	conn, err := db.Connect(ctx, config.Conninfo)
+	if err != nil {
+		return err
+	}
+
+	commits, rollbacks, err := startLoop(ctx, conn, config.Rate)
+	if err != nil {
+		logger.Warnf("rollbacks worker failed: %s", err)
+	}
+
+	logger.Infof("rollbacks worker finished: %d rollbacks, %d commits", rollbacks, commits)
+	return nil
+}
+
+// startLoop start rollbacks in a loop with required rate until context timeout exceeded.
+func startLoop(ctx context.Context, conn db.Conn, r float64) (int, int, error) {
 	table, err := createTempTable(ctx, conn)
 	if err != nil {
 		return 0, 0, err
 	}
 
-	// Initialize random source.
-	rand.Seed(time.Now().UnixNano())
+	var commits, rollbacks int
 
-	// Increment MaxRate up to 1 due to rand.Intn() never return max value.
-	maxRate++
-
-	var successful, failed int
-
+	limiter := rate.NewLimiter(rate.Limit(r), 1)
 	for {
-		// Select random query with arguments.
-		q, args := newErrQuery(-1, table)
+		if limiter.Allow() {
+			// Select random query with arguments.
+			q, args := newErrQuery(table)
 
-		// Execute query. Suppress errors, it is designed all generated queries produce errors.
-		_, _, err = conn.Exec(ctx, q, args...)
-		if err != nil {
-			failed++
-		} else {
-			successful++
+			// Execute query. Suppress errors, it is designed all generated queries produce errors.
+			// Consider the error related to context expiration lead to rollback.
+			_, _, err = conn.Exec(ctx, q, args...)
+			if err != nil {
+				rollbacks++
+			} else {
+				commits++
+			}
 		}
-
-		// Calculate interval for rate throttling. Use 900ms as working time and take 100ms
-		// as calculation/executing overhead.
-		var interval int64
-		if minRate != maxRate {
-			interval = 900000000 / int64(rand.Intn(int(maxRate-minRate))+int(minRate))
-		} else {
-			interval = 900000000 / int64(minRate)
-		}
-
-		timer := time.NewTimer(time.Duration(interval) * time.Nanosecond)
 
 		select {
-		case <-timer.C:
-			continue
 		case <-ctx.Done():
-			//log.Info("exit signaled, stop rollbacks workload")
-			return successful, failed, nil
+			return commits, rollbacks, nil
+		default:
 		}
 	}
 }
@@ -160,17 +153,13 @@ func createTempTable(ctx context.Context, conn db.Conn) (string, error) {
 	return t, nil
 }
 
-// newErrQuery returns random erroneous query with arguments.
-func newErrQuery(n int, table string) (string, []interface{}) {
+// newErrQuery returns random invalid query with arguments.
+func newErrQuery(table string) (string, []interface{}) {
 	// Total number of available erroneous queries.
 	const total = 15
 
 	rand.Seed(time.Now().UnixNano())
-
-	var index = n
-	if index < 0 || index >= 15 {
-		index = rand.Intn(total)
-	}
+	idx := rand.Intn(total)
 
 	var (
 		num1, num2 = rand.Intn(1000), rand.Intn(10000)
@@ -181,7 +170,7 @@ func newErrQuery(n int, table string) (string, []interface{}) {
 		args []interface{}
 	)
 
-	switch index {
+	switch idx {
 	case 0:
 		// ERROR:  INSERT has more expressions than target columns
 		q = fmt.Sprintf("INSERT INTO %s (entity_id, name, size_b) VALUES ($1, $2, $3, $4)", table)

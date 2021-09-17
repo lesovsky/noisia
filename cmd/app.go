@@ -24,8 +24,7 @@ type config struct {
 	idleXactsNaptimeMin   time.Duration
 	idleXactsNaptimeMax   time.Duration
 	rollbacks             bool
-	rollbacksMinRate      uint16
-	rollbacksMaxRate      uint16
+	rollbacksRate         float64
 	waitXacts             bool
 	waitXactsFixture      bool
 	waitXactsLocktimeMin  time.Duration
@@ -67,7 +66,7 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 	}
 
 	if c.rollbacks {
-		log.Info("start rollbacks workload")
+		log.Infof("start rollbacks workload for %s", c.duration)
 		wg.Add(1)
 		go func() {
 			err := startRollbacksWorkload(ctx, c, log)
@@ -177,8 +176,7 @@ func startRollbacksWorkload(ctx context.Context, c config, logger log.Logger) er
 		rollbacks.Config{
 			Conninfo: c.postgresConninfo,
 			Jobs:     c.jobs,
-			MinRate:  c.rollbacksMinRate,
-			MaxRate:  c.rollbacksMaxRate,
+			Rate:     c.rollbacksRate,
 		}, logger,
 	)
 	if err != nil {
