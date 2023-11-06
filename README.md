@@ -5,10 +5,10 @@
 ---
 
 #### Supported workloads:
-- `idle transactions` - active transactions on hot-write tables that do nothing during its lifetime.
+- `idle transactions` - active transactions on hot-write tables that do nothing during their lifetime.
 - `rollbacks` - fake invalid queries that generate errors and increase rollbacks counter.
-- `waiting transactions` - transactions that locks hot-write tables and then idle, that lead to stuck other transactions.
-- `deadlocks` - simultaneous transactions where each hold locks that the other transactions wants.
+- `waiting transactions` - transactions that lock hot-write tables and then idle, leading to other transactions getting stuck
+- `deadlocks` - simultaneous transactions where each holds locks that the other transactions want.
 - `temporary files` - queries that produce on-disk temporary files due to lack of `work_mem`.
 - `terminate backends` - terminate random backends (or queries) using `pg_terminate_backend()`, `pg_cancel_backend()`.
 - `failed connections` - exhaust all available connections (other clients unable to connect to Postgres).
@@ -74,7 +74,7 @@ func main() {
 
 #### Workload impact
 
-Running workloads could impact on already running workload produced by other applications. This impact might be expressed as performance degradation, transactions stuck, cancelled queries, disconnected clients, etc.
+Running workloads could impact already running workloads produced by other applications. This impact might be expressed as performance degradation, transactions getting stuck, cancelled queries, disconnected clients, etc.
 
 | Workload  | Impact? |
 | :---         |     :---:      |
