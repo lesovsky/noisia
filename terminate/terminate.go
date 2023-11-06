@@ -1,3 +1,17 @@
+// Copyright 2021 The Noisia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+// Package terminate defines implementation of workload which randomly cancel queries
+// or terminate backends. Application that executes canceled queries or hold terminated
+// connections receive errors.
+//
+// The workload is implemented as single worker which sends cancel/terminate commands
+// with interval based on Config.Rate and Config.Interval. Exact command to be sent is
+// based on Config.SoftMode, depending on it pg_cancel_backend() or pg_terminate_backend()
+// is used.  The workload could be additionally tuned for cancel/terminate processes
+// of exact users, from specific client address, connected to specific databases or
+// which has specific application name.
 package terminate
 
 import (
@@ -11,9 +25,9 @@ import (
 
 // Config defines configuration settings for backends terminate workload.
 type Config struct {
-	// Conninfo defines connections string used for connecting to Postgres.
+	// Conninfo defines connection string used for connecting to Postgres.
 	Conninfo string
-	// Interval defines an interval of single round during which the number of backends/queries should be terminated (accordingly to rate).
+	// Interval defines an interval of single round during which the number of backends/queries should be signalled (accordingly to rate).
 	Interval time.Duration
 	// Rate defines a rate of how many backends should be terminated (or queries canceled) per interval.
 	Rate uint16
@@ -44,6 +58,7 @@ func (c Config) validate() error {
 	return nil
 }
 
+// workload implements noisia.Workload interface.
 type workload struct {
 	config Config
 	logger log.Logger

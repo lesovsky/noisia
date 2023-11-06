@@ -26,16 +26,14 @@ func main() {
 		idleXactsNaptimeMin   = kingpin.Flag("idle-xacts.naptime-min", "Min transactions naptime").Default("5s").Envar("NOISIA_IDLE_XACTS_NAPTIME_MIN").Duration()
 		idleXactsNaptimeMax   = kingpin.Flag("idle-xacts.naptime-max", "Max transactions naptime").Default("20s").Envar("NOISIA_IDLE_XACTS_NAPTIME_MAX").Duration()
 		rollbacks             = kingpin.Flag("rollbacks", "Run rollbacks workload").Default("false").Envar("NOISIA_ROLLBACKS").Bool()
-		rollbacksMinRate      = kingpin.Flag("rollbacks.min-rate", "Approximate minimum number of rollbacks per second (per worker)").Default("10").Envar("NOISIA_ROLLBACKS_MIN_RATE").Uint16()
-		rollbacksMaxRate      = kingpin.Flag("rollbacks.max-rate", "Approximate maximum number of rollbacks per second (per worker)").Default("10").Envar("NOISIA_ROLLBACKS_MAX_RATE").Uint16()
+		rollbacksRate         = kingpin.Flag("rollbacks.rate", "Rollbacks rate per second (per worker)").Default("1").Envar("NOISIA_ROLLBACKS_RATE").Float64()
 		waitXacts             = kingpin.Flag("wait-xacts", "Run waiting transactions workload").Default("false").Envar("NOISIA_IDLE_XACTS").Bool()
 		waitXactsFixture      = kingpin.Flag("wait-xacts.fixture", "Run workload using fixture table").Default("false").Envar("NOISIA_WAIT_XACTS_FIXTURE").Bool()
 		waitXactsLocktimeMin  = kingpin.Flag("wait-xacts.locktime-min", "Min transactions locking time").Default("5s").Envar("NOISIA_WAIT_XACTS_LOCKTIME_MIN").Duration()
 		waitXactsLocktimeMax  = kingpin.Flag("wait-xacts.locktime-max", "Max transactions locking time").Default("20s").Envar("NOISIA_WAIT_XACTS_LOCKTIME_MAX").Duration()
 		deadlocks             = kingpin.Flag("deadlocks", "Run deadlocks workload").Default("false").Envar("NOISIA_DEADLOCKS").Bool()
-		tempFiles             = kingpin.Flag("temp-files", "Run temporary files workload").Default("false").Envar("NOISIA_TEMP_FILES").Bool()
-		tempFilesRate         = kingpin.Flag("temp-files.rate", "Number of queries per second (per worker)").Default("10").Envar("NOISIA_TEMP_FILES_RATE").Uint16()
-		tempFilesScaleFactor  = kingpin.Flag("temp-files.scale-factor", "Test data multiplier, 1 = 1000 rows").Default("10").Envar("NOISIA_TEMP_FILES_SCALE_FACTOR").Uint16()
+		tempFiles             = kingpin.Flag("tempfiles", "Run temporary files workload").Default("false").Envar("NOISIA_TEMP_FILES").Bool()
+		tempFilesRate         = kingpin.Flag("tempfiles.rate", "Number of queries per second (per worker)").Default("1").Envar("NOISIA_TEMP_FILES_RATE").Float64()
 		terminate             = kingpin.Flag("terminate", "Run terminate workload").Default("false").Envar("NOISIA_TERMINATE").Bool()
 		terminateRate         = kingpin.Flag("terminate.rate", "Number of backends/queries terminate per interval").Default("1").Envar("NOISIA_TERMINATE_RATE").Uint16()
 		terminateInterval     = kingpin.Flag("terminate.interval", "Time interval of single round of termination").Default("1s").Envar("NOISIA_TERMINATE_INTERVAL").Duration()
@@ -46,6 +44,8 @@ func main() {
 		terminateDatabase     = kingpin.Flag("terminate.database", "Terminate backends connected to specific database").Default("").Envar("NOISIA_TERMINATE_DATABASE").String()
 		terminateAppName      = kingpin.Flag("terminate.appname", "Terminate backends created from specific applications").Default("").Envar("NOISIA_TERMINATE_APPNAME").String()
 		failconns             = kingpin.Flag("failconns", "Run connections exhaustion workload").Default("false").Envar("NOISIA_FAILCONNS").Bool()
+		forkconns             = kingpin.Flag("forkconns", "Run queries in dedicated connections").Default("false").Envar("NOISIA_FORKCONNS").Bool()
+		forkconnsRate         = kingpin.Flag("forkconns.rate", "Number of connections made per second").Default("1").Envar("NOISIA_FORKCONNS_RATE").Uint16()
 	)
 	kingpin.Parse()
 
@@ -65,8 +65,7 @@ func main() {
 		idleXactsNaptimeMin:   *idleXactsNaptimeMin,
 		idleXactsNaptimeMax:   *idleXactsNaptimeMax,
 		rollbacks:             *rollbacks,
-		rollbacksMinRate:      *rollbacksMinRate,
-		rollbacksMaxRate:      *rollbacksMaxRate,
+		rollbacksRate:         *rollbacksRate,
 		waitXacts:             *waitXacts,
 		waitXactsFixture:      *waitXactsFixture,
 		waitXactsLocktimeMin:  *waitXactsLocktimeMin,
@@ -74,7 +73,6 @@ func main() {
 		deadlocks:             *deadlocks,
 		tempFiles:             *tempFiles,
 		tempFilesRate:         *tempFilesRate,
-		tempFilesScaleFactor:  *tempFilesScaleFactor,
 		terminate:             *terminate,
 		terminateRate:         *terminateRate,
 		terminateInterval:     *terminateInterval,
@@ -85,6 +83,8 @@ func main() {
 		terminateDatabase:     *terminateDatabase,
 		terminateAppName:      *terminateAppName,
 		failconns:             *failconns,
+		forkconns:             *forkconns,
+		forkconnsRate:         *forkconnsRate,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

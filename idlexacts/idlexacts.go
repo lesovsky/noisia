@@ -1,3 +1,22 @@
+// Copyright 2021 The Noisia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+// Package idlexacts defines implementation of workload which creates idle
+// transactions. During the workload, some temporary tables (with ON COMMIT DROP)
+// might be created.
+//
+// Before starting the workload, looking for tables with most UPDATE and DELETE
+// operations. Then create goroutines in a loop. Single goroutine selects a random
+// victim table from the list and creates a single idle transaction. The number of
+// goroutines depends on Config.Jobs. During the transaction, a temporary table has
+// been created with one row from victim table. This make the transaction writeable
+// and force Postgres to avoid vacuuming the row version used in the transaction.
+// This approach avoid direct write into victim table and at the same time lead to
+// bloat due to idle transaction. If no table is passed transaction do nothing.
+// Next, transaction is keeping idle for some random interval between
+// Config.NaptimeMin and Config.NaptimeMax. After time is out, transaction is rolled
+// back and temporary table is dropped.
 package idlexacts
 
 import (
@@ -13,13 +32,13 @@ import (
 
 // Config defines configuration settings for idle transactions workload.
 type Config struct {
-	// Conninfo defines connections string used for connecting to Postgres.
+	// Conninfo defines connection string used for connecting to Postgres.
 	Conninfo string
-	// Jobs defines how many concurrent idle transactions should be running during workload.
+	// Jobs defines how many concurrent workers and thus idle transactions should be running.
 	Jobs uint16
-	// NaptimeMin defines lower threshold when transactions can idle.
+	// NaptimeMin defines lower threshold when transactions being idle.
 	NaptimeMin time.Duration
-	// NaptimeMax defines upper threshold when transactions can idle.
+	// NaptimeMax defines upper threshold when transactions being idle.
 	NaptimeMax time.Duration
 }
 
@@ -98,7 +117,7 @@ func startLoop(ctx context.Context, log log.Logger, pool db.DB, tables []string,
 
 				err := startSingleIdleXact(ctx, pool, table, naptime)
 				if err != nil {
-					log.Warnf("start idle xact failed: %s", err)
+					log.Warnf("start idle transaction failed: %s", err)
 				}
 
 				// When worker finishes, read from the channel to allow starting another worker.

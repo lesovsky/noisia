@@ -1,3 +1,18 @@
+// Copyright 2021 The Noisia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+// Package tempfiles defines implementation of workload which executes queries
+// which create on-disk temporary files due to lack of work_mem.
+//
+// Before the starting workload, necessary number of workers is started. Each worker
+// connects to the database, creates connection pool and starts working loop. In the
+// loop, worker executes queries in a dedicated goroutine (to avoid awaiting when query
+// is finished). Before start query, reduce work_mem to guarantee creation of temp
+// file. Next query is executed accordingly to rate specified in Config.Rate.
+// Workload duration is controlled by context created outside and passed to Run method.
+// Context is passed to each worker and used in the worker's loop. When context expires
+// loop is stopped.
 package tempfiles
 
 import (
@@ -6,28 +21,18 @@ import (
 	"github.com/lesovsky/noisia"
 	"github.com/lesovsky/noisia/db"
 	"github.com/lesovsky/noisia/log"
-	"time"
+	"golang.org/x/time/rate"
+	"sync"
 )
 
-const (
-	queryCreateTable = `CREATE TABLE IF NOT EXISTS _noisia_tempfiles_workload (a text, b text, c text, d text, e text, f text, g text, h text, i text, j text, k text, l text, m text, n text, o text, p text, q text, r text, s text, t text, u text, v text, w text, x text, y text, z text)`
-	queryLoadData    = `INSERT INTO _noisia_tempfiles_workload (a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z) SELECT random()::text,random()::text,
-random()::text,random()::text,random()::text,random()::text,random()::text,random()::text,random()::text,random()::text,random()::text,
-random()::text,random()::text,random()::text,random()::text,random()::text,random()::text,random()::text,random()::text,random()::text,
-random()::text,random()::text,random()::text,random()::text,random()::text,random()::text from generate_series(1,$1)`
-	querySelectData = `SELECT a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z FROM _noisia_tempfiles_workload GROUP BY z,y,x,w,v,u,t,s,r,q,p,o,n,m,l,k,j,i,h,g,f,e,d,c,b,a ORDER BY a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z DESC`
-)
-
-// Config defines configuration settings for temp files workload
+// Config defines configuration settings for temp files workload.
 type Config struct {
-	// Conninfo defines connections string used for connecting to Postgres.
+	// Conninfo defines connection string used for connecting to Postgres.
 	Conninfo string
 	// Jobs defines how many workers should be created for producing temp files.
 	Jobs uint16
 	// Rate defines rate interval for queries executing.
-	Rate uint16
-	// ScaleFactor defines multiplier for amount of fixtures in temporary table.
-	ScaleFactor uint16
+	Rate float64
 }
 
 // validate method checks workload configuration settings.
@@ -36,12 +41,8 @@ func (c Config) validate() error {
 		return fmt.Errorf("jobs must be greater than zero")
 	}
 
-	if c.Rate == 0 {
-		return fmt.Errorf("temp files rate must be greater than zero")
-	}
-
-	if c.ScaleFactor == 0 {
-		return fmt.Errorf("temp files rate must be greater than zero")
+	if c.Rate <= 0 {
+		return fmt.Errorf("temp files queries rate must be positive")
 	}
 
 	return nil
@@ -64,71 +65,137 @@ func NewWorkload(config Config, logger log.Logger) (noisia.Workload, error) {
 	return &workload{config, logger, nil}, nil
 }
 
-// Run connects to Postgres and starts the workload.
+// Run creates necessary number of workers and waiting for until the are finish.
+// Also collect stats about temp files before and after workload. This is not the
+// perfect, but there is no way to know how many temp bytes generated inside the
+// session or even transaction.
 func (w *workload) Run(ctx context.Context) error {
-	pool, err := db.NewPostgresDB(ctx, w.config.Conninfo)
-	if err != nil {
-		return err
-	}
-	w.pool = pool
-	defer w.pool.Close()
+	workers := int(w.config.Jobs)
 
-	// Prepare temp tables and fixtures for workload.
-	err = w.prepare(ctx)
+	var wg sync.WaitGroup
+
+	bytesBefore, err := countTempBytes(w.config.Conninfo)
 	if err != nil {
 		return err
 	}
 
-	// Cleanup in the end.
-	defer func() {
-		err = w.cleanup()
-		if err != nil {
-			w.logger.Warnf("temp files cleanup failed: %s", err)
-		}
-	}()
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			err := runWorker(ctx, w.logger, w.config)
+			if err != nil {
+				w.logger.Warnf("start tempfiles worker failed: %s, continue", err)
+			}
+			wg.Done()
+		}()
+	}
 
-	// calculate inter-query interval for rate throttling
-	interval := 1000000000 / int64(w.config.Rate)
+	wg.Wait()
 
-	// keep specified number of workers using channel - run new workers until there is any free slot
-	guard := make(chan struct{}, w.config.Jobs)
+	bytesAfter, err := countTempBytes(w.config.Conninfo)
+	if err != nil {
+		return err
+	}
+	w.logger.Infof("generated %d temp bytes (might include temp bytes produced by concurrent workload)", bytesAfter-bytesBefore)
+
+	return nil
+}
+
+// runWorker connects to the database and starts tempfiles loop.
+func runWorker(ctx context.Context, log log.Logger, config Config) error {
+	log.Info("start tempfiles worker")
+
+	// Use pool because single connection is not enough here. Working loop executes
+	// queries asynchronously and several queries might be executed concurrently.
+	pool, err := db.NewPostgresDB(ctx, config.Conninfo)
+	if err != nil {
+		return err
+	}
+
+	defer pool.Close()
+
+	err = startLoop(ctx, pool, log, config.Rate)
+	if err != nil {
+		return err
+	}
+
+	log.Infof("tempfiles worker finished")
+	return nil
+}
+
+// startLoop start executing queries in a loop with required rate until context timeout exceeded.
+func startLoop(ctx context.Context, pool db.DB, log log.Logger, r float64) error {
+	var wg sync.WaitGroup
+
+	limiter := rate.NewLimiter(rate.Limit(r), 1)
 	for {
-		select {
-		// run workers only when it's possible to write into channel (channel is limited by number of jobs)
-		case guard <- struct{}{}:
+		if limiter.Allow() {
+			wg.Add(1)
+
+			// Due to produced temp files, queries could be executed too long. At the same time
+			// we would like to preserve required rate of queries. Don't wait when query is
+			// finished and execute them asynchronously.
 			go func() {
-				// Don't care about errors.
-				_, _, workerErr := pool.Exec(ctx, querySelectData)
-				if workerErr != nil {
-					w.logger.Warnf("query failed: %s", err)
+				// Ignore errors related to context expiration.
+				err := execQuery(ctx, pool)
+				if err != nil && ctx.Err() == nil {
+					log.Warnf("executing tempfiles query failed: %v, continue", err)
 				}
 
-				time.Sleep(time.Duration(interval) * time.Nanosecond)
-
-				<-guard
+				wg.Done()
 			}()
+		}
+
+		select {
 		case <-ctx.Done():
+			wg.Wait()
 			return nil
+		default:
 		}
 	}
 }
 
-func (w *workload) prepare(ctx context.Context) error {
-	_, _, err := w.pool.Exec(ctx, queryCreateTable)
+// execQuery executes query which should create a temp file. Before execute query,
+// set work_mem value to minimum possible value to guarantee creation of temp file.
+func execQuery(ctx context.Context, pool db.DB) error {
+	_, _, err := pool.Exec(ctx, "SET work_mem TO '64kB'")
 	if err != nil {
 		return err
 	}
-	_, _, err = w.pool.Exec(ctx, queryLoadData, 1000*w.config.ScaleFactor)
+
+	// Even on empty database this query might produce ~50MB temp file.
+	_, _, err = pool.Exec(ctx, "SELECT * FROM pg_class a, pg_class b ORDER BY random()")
 	if err != nil {
 		return err
 	}
+
 	return nil
 }
 
-func (w *workload) cleanup() error {
-	_, _, err := w.pool.Exec(context.Background(), "DROP TABLE IF EXISTS _noisia_tempfiles_workload")
+// countTempBytes queries current database statistics about temp bytes written.
+// Private context is used here, because this is auxiliary routine and is not related to
+// main workload.
+func countTempBytes(conninfo string) (int, error) {
+	bytes := -1 // zero could be returned from database and it is valid value
+
+	conn, err := db.Connect(context.Background(), conninfo)
 	if err != nil {
-		return err
+		return bytes, err
 	}
-	return nil
+
+	defer func() { _ = conn.Close() }()
+
+	rows, err := conn.Query(context.Background(), "SELECT pg_stat_get_db_temp_bytes(oid) from pg_database where datname = current_database()")
+	if err != nil {
+		return bytes, err
+	}
+
+	for rows.Next() {
+		err = rows.Scan(&bytes)
+		if err != nil {
+			return bytes, err
+		}
+	}
+
+	return bytes, nil
 }

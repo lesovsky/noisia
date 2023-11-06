@@ -1,3 +1,16 @@
+// Copyright 2021 The Noisia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+// Package failconns implements a workload which creates many database connections
+// forcing Postgres to fork children processes until the value of max_connections
+// is reached. When max_connections is reached all connection slots are exhausted
+// and no one client can connect to Postgres.
+//
+// Implementation of the workload is quite simple - create new connections in a
+// loop until Postgres starts respond with error. By default, an array with 1000
+// slots is used, so it possible to set max_connections to higher value and
+// pass the workload with no errors.
 package failconns
 
 import (
@@ -8,9 +21,9 @@ import (
 	"time"
 )
 
-// Config defines configuration settings for idle transactions workload.
+// Config defines configuration settings for failconns workload.
 type Config struct {
-	// Conninfo defines connections string used for connecting to Postgres.
+	// Conninfo defines connection string used for connecting to Postgres.
 	Conninfo string
 }
 
@@ -74,6 +87,7 @@ func (w *workload) Run(ctx context.Context) error {
 	}
 }
 
+// cleanup gracefully closes all database connections
 func (w *workload) cleanup(conns []db.Conn) {
 	for i := range conns {
 		_ = conns[i].Close()

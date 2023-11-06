@@ -7,11 +7,12 @@
 #### Supported workloads:
 - `idle transactions` - active transactions on hot-write tables that do nothing during their lifetime.
 - `rollbacks` - fake invalid queries that generate errors and increase rollbacks counter.
-- `waiting transactions` - transactions that lock hot-write tables and then idle, that lead to stuck other transactions.
-- `deadlocks` - simultaneous transactions where each hold locks that the other transactions want.
+- `waiting transactions` - transactions that lock hot-write tables and then idle, leading to other transactions getting stuck
+- `deadlocks` - simultaneous transactions where each holds locks that the other transactions want.
 - `temporary files` - queries that produce on-disk temporary files due to lack of `work_mem`.
 - `terminate backends` - terminate random backends (or queries) using `pg_terminate_backend()`, `pg_cancel_backend()`.
-- `failed connections` - exhaust all available connections (other clients unable to connect to Postgres) 
+- `failed connections` - exhaust all available connections (other clients unable to connect to Postgres).
+- `fork connections` - execute single, short query in a dedicated connection (lead to excessive forking of Postgres backends).
 - ...see built-in help for more runtime options.
 
 #### Disclaimer
@@ -32,43 +33,59 @@ docker run --rm -ti lesovsky/noisia:latest noisia --help
 
 #### Using in your own code
 You can import `noisia` and use necessary workloads in your code. Always use contexts to avoid infinite run. See tiny example below:
+
 ```go
+package main
+
 import (
-  "context"
-  "fmt"
-  "github.com/lesovsky/noisia/waitxacts"
-  "time"
+	"context"
+	"fmt"
+	"github.com/lesovsky/noisia/waitxacts"
+	"github.com/rs/zerolog"
+	"log"
+	"os"
+	"time"
 )
 
 func main() {
-  config := &waitxacts.Config{
-    PostgresConninfo:    "host=127.0.0.1",
-    Jobs:                 2,
-  }
+	config := waitxacts.Config{
+		Conninfo:    "host=127.0.0.1",
+		Jobs:        2,
+		LocktimeMin: 5*time.Second,
+		LocktimeMax: 20*time.Second,
+	}
 
-  ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-  defer cancel()
+	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}).Level(zerolog.InfoLevel).With().Timestamp().Logger()
 
-  w := waitxacts.NewWorkload(config)
-  if err := w.Run(ctx); err != nil {
-    fmt.Println(err)
-  }
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	w, err := waitxacts.NewWorkload(config, logger)
+	if err != nil {
+		log.Panicln(err)
+	}
+	
+	err = w.Run(ctx)
+	if err != nil {
+		fmt.Println(err)
+	}
 }
 ```
 
 #### Workload impact
 
-Running workloads could impact on already running workload produced by other applications. This impact might be expressed as performance degradation, transactions stuck, canceled queries, disconnected clients, etc.
+Running workloads could impact already running workloads produced by other applications. This impact might be expressed as performance degradation, transactions getting stuck, cancelled queries, disconnected clients, etc.
 
 | Workload  | Impact? |
 | :---         |     :---:      |
 | deadlocks  | No  |
-| failconns  | **Yes**  |
-| idlexacts  | **Yes**  |
+| failconns  | **Yes**: exhaust `max_connections` limit; this leads to other clients are unable to connect to Postgres |
+| forkconns  | **Yes**: excessive creation of Postgres child processes; potentially might lead to `max_connections` exhaustion |
+| idlexacts  | **Yes**: might lead to tables and indexes bloat |
 | rollbacks  | No  |
-| tempfiles  | No  |
-| terminate  | **Yes**  |
-| waitxacts  | **Yes**  |
+| tempfiles  | **Yes**: might increase storage utilization and degrade storage performance  |
+| terminate  | **Yes**: already established database connections could be terminated accidentally  |
+| waitxacts  | **Yes**: locks heavy-write tables; this leads to blocking concurrently executed queries  |
 
 #### Contribution
 - PR's are welcome.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/lesovsky/noisia/deadlocks"
 	"github.com/lesovsky/noisia/failconns"
+	"github.com/lesovsky/noisia/forkconns"
 	"github.com/lesovsky/noisia/idlexacts"
 	"github.com/lesovsky/noisia/log"
 	"github.com/lesovsky/noisia/rollbacks"
@@ -23,16 +24,14 @@ type config struct {
 	idleXactsNaptimeMin   time.Duration
 	idleXactsNaptimeMax   time.Duration
 	rollbacks             bool
-	rollbacksMinRate      uint16
-	rollbacksMaxRate      uint16
+	rollbacksRate         float64
 	waitXacts             bool
 	waitXactsFixture      bool
 	waitXactsLocktimeMin  time.Duration
 	waitXactsLocktimeMax  time.Duration
 	deadlocks             bool
 	tempFiles             bool
-	tempFilesRate         uint16
-	tempFilesScaleFactor  uint16
+	tempFilesRate         float64
 	terminate             bool
 	terminateInterval     time.Duration
 	terminateRate         uint16
@@ -43,6 +42,8 @@ type config struct {
 	terminateDatabase     string
 	terminateAppName      string
 	failconns             bool
+	forkconns             bool
+	forkconnsRate         uint16
 }
 
 func runApplication(ctx context.Context, c config, log log.Logger) error {
@@ -64,7 +65,7 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 	}
 
 	if c.rollbacks {
-		log.Info("start rollbacks workload")
+		log.Infof("start rollbacks workload for %s", c.duration)
 		wg.Add(1)
 		go func() {
 			err := startRollbacksWorkload(ctx, c, log)
@@ -135,6 +136,18 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 		}()
 	}
 
+	if c.forkconns {
+		log.Info("start fork connections workload")
+		wg.Add(1)
+		go func() {
+			err := startForkconnsWorkload(ctx, c, log)
+			if err != nil {
+				log.Errorf("fork connections workload failed: %s", err)
+			}
+			wg.Done()
+		}()
+	}
+
 	wg.Wait()
 
 	return nil
@@ -162,8 +175,7 @@ func startRollbacksWorkload(ctx context.Context, c config, logger log.Logger) er
 		rollbacks.Config{
 			Conninfo: c.postgresConninfo,
 			Jobs:     c.jobs,
-			MinRate:  c.rollbacksMinRate,
-			MaxRate:  c.rollbacksMaxRate,
+			Rate:     c.rollbacksRate,
 		}, logger,
 	)
 	if err != nil {
@@ -207,10 +219,9 @@ func startDeadlocksWorkload(ctx context.Context, c config, logger log.Logger) er
 func startTempFilesWorkload(ctx context.Context, c config, logger log.Logger) error {
 	workload, err := tempfiles.NewWorkload(
 		tempfiles.Config{
-			Conninfo:    c.postgresConninfo,
-			Jobs:        c.jobs,
-			Rate:        c.tempFilesRate,
-			ScaleFactor: c.tempFilesScaleFactor,
+			Conninfo: c.postgresConninfo,
+			Jobs:     c.jobs,
+			Rate:     c.tempFilesRate,
 		}, logger,
 	)
 	if err != nil {
@@ -245,6 +256,21 @@ func startFailconnsWorkload(ctx context.Context, c config, logger log.Logger) er
 	workload, err := failconns.NewWorkload(
 		failconns.Config{
 			Conninfo: c.postgresConninfo,
+		}, logger,
+	)
+	if err != nil {
+		return err
+	}
+
+	return workload.Run(ctx)
+}
+
+func startForkconnsWorkload(ctx context.Context, c config, logger log.Logger) error {
+	workload, err := forkconns.NewWorkload(
+		forkconns.Config{
+			Conninfo: c.postgresConninfo,
+			Rate:     c.forkconnsRate,
+			Jobs:     c.jobs,
 		}, logger,
 	)
 	if err != nil {

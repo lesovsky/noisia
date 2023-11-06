@@ -14,12 +14,12 @@ func TestConfig_validate(t *testing.T) {
 		valid  bool
 		config Config
 	}{
-		{valid: true, config: Config{Jobs: 2, LocktimeMin: 5 * time.Second, LocktimeMax: 10 * time.Second}},
-		{valid: false, config: Config{Jobs: 1}},
-		{valid: false, config: Config{Jobs: 2, LocktimeMin: 5 * time.Second, LocktimeMax: 4 * time.Second}},
-		{valid: false, config: Config{Jobs: 2, LocktimeMin: 5 * time.Second, LocktimeMax: 0}},
-		{valid: false, config: Config{Jobs: 2, LocktimeMin: 0, LocktimeMax: 5 * time.Second}},
-		{valid: false, config: Config{Jobs: 2, LocktimeMin: 0, LocktimeMax: 0}},
+		{valid: true, config: Config{Jobs: 1, LocktimeMin: 5 * time.Second, LocktimeMax: 10 * time.Second}},
+		{valid: false, config: Config{Jobs: 0}},
+		{valid: false, config: Config{Jobs: 1, LocktimeMin: 5 * time.Second, LocktimeMax: 4 * time.Second}},
+		{valid: false, config: Config{Jobs: 1, LocktimeMin: 5 * time.Second, LocktimeMax: 0}},
+		{valid: false, config: Config{Jobs: 1, LocktimeMin: 0, LocktimeMax: 5 * time.Second}},
+		{valid: false, config: Config{Jobs: 1, LocktimeMin: 0, LocktimeMax: 0}},
 	}
 
 	for _, tc := range testcases {
@@ -57,10 +57,11 @@ func Test_startLoop(t *testing.T) {
 	_, _, err = pool.Exec(context.Background(), "CREATE TABLE noisia_test_1 (a int)")
 	assert.NoError(t, err)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	assert.NoError(t, startLoop(ctx, log.NewDefaultLogger("info"), pool, []string{"noisia_test_1"}, 2, 10*time.Millisecond, 50*time.Millisecond))
+	cfg := Config{Jobs: 1, Fixture: true, LocktimeMin: 10 * time.Millisecond, LocktimeMax: 100 * time.Millisecond}
+	assert.NoError(t, startLoop(ctx, log.NewDefaultLogger("info"), pool, []string{"noisia_test_1"}, cfg))
 
 	_, _, err = pool.Exec(context.Background(), "DROP TABLE noisia_test_1")
 	assert.NoError(t, err)
@@ -73,8 +74,12 @@ func Test_lockTable(t *testing.T) {
 	_, _, err = pool.Exec(context.Background(), "CREATE TABLE noisia_test_2 (a int)")
 	assert.NoError(t, err)
 
-	assert.NoError(t, lockTable(context.Background(), pool, "noisia_test_2", 10*time.Millisecond))
+	queryCh := make(chan struct{})
+	go func() {
+		assert.NoError(t, lockTable(context.Background(), pool, "noisia_test_2", 10*time.Millisecond, queryCh))
+	}()
 
+	<-queryCh
 	_, _, err = pool.Exec(context.Background(), "DROP TABLE noisia_test_2")
 	assert.NoError(t, err)
 }
