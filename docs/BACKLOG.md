@@ -45,6 +45,14 @@ Each entry below is sized to be expanded into a user-spec.
   cgroup / `vm.overcommit_memory`, query review, statement limits.
 - **Notes:** flagship of the slow line; technically the most interesting and the best
   proving ground for the self-report mechanism.
+- **Status:** implemented (prepared-statement / plan-cache leak variant). Verified end-to-end on a
+  stand: cgroup `CONSTRAINT_MEMCG` OOM of the backend → instance restart → climax line logged.
+- **Follow-up ideas:**
+  - Optionally `EXECUTE` each prepared statement once: `PREPARE` caches only the query tree, while the
+    generic plan is built/cached on first `EXECUTE` — executing would grow backend memory faster and
+    reach OOM sooner without needing a tightly capped stand.
+  - Document/observe that with swap enabled the approach degrades (panel rate → `0/s`) instead of a
+    prompt OOM (already captured in the README demo tips).
 
 ## Priority 2 — Disk → full
 
