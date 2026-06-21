@@ -258,7 +258,7 @@ behavior changes. **Breaking changes:** no.
 
 ### Wave 1 (независимые)
 
-#### Task 1: Implement `backendkiller` workload package
+#### Task 1: Implement `backendkiller` workload package ✅ done
 - **Description:** Create the `backendkiller` package implementing the canonical workload shape and the
   backend-killer behavior: single dedicated `db.Connect`, single-threaded rate-limited loop issuing
   unique heavy literal `PREPARE` statements, the escalation panel, optional own-backend memory line, and

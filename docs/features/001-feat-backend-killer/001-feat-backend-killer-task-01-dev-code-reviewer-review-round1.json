@@ -1,0 +1,61 @@
+{
+  "reviewer": "dev-code-reviewer",
+  "status": "changes_required",
+  "summary": "The backendkiller package faithfully mirrors the canonical workload shape and correctly implements all 9 Decisions: rate.Inf for Rate==0, the Allow() busy-poll loop with select{ctx.Done()}, the separate report-ticker goroutine reading only atomics (never the non-concurrency-safe Conn), Decision 5 climax/init/per-tick error triage, Decision 8 application_name, and Decision 9 DSN sanitization. Production code is clean, compiles, vets, and gofmt-passes. The blocking issue is in the test: Test_runLoop_monotonicGrowth shares a plain int64 across goroutines with no happens-before relationship, which is a real data race the required `go test -race` command can flag.",
+  "criticalIssues": [
+    {
+      "file": "backendkiller/backendkiller_test.go",
+      "line": 114,
+      "severity": "critical",
+      "category": "testing",
+      "issue": "Data race on the plain `early int64` variable. It is written by a spawned goroutine (line 117 `early = counter.Load()`) and read by the main goroutine (line 133 `assert.GreaterOrEqual(t, final, early)`) with no synchronization establishing a happens-before edge. The spawned goroutine is never joined (no channel, no WaitGroup, no atomic for `early` itself) — the only ordering is the timing accident that the writer fires at ~300ms while runLoop blocks ~1s.",
+      "impact": "The task's mandatory verify command is `go test -race -p 1 ./backendkiller/`. The race detector observes the unsynchronized read/write of `early` and can report a DATA RACE, turning the required green build red. This is exactly the concurrency-correctness class the review was asked to scrutinize. It also undermines the test's intent: even when it passes, the value read is not guaranteed to be the value written.",
+      "recommendation": "Make `early` an `atomic.Int64` and read/write via Load/Store, OR drop the goroutine entirely and take two sequential snapshots of `counter` inside the main goroutine (sleep, snapshot early; let runLoop finish, snapshot final) — but runLoop blocks until ctx timeout, so prefer the atomic. Simplest fix: `var early atomic.Int64`, goroutine does `early.Store(counter.Load())`, assertion uses `early.Load()`. Re-run `go test -race -p 1 ./backendkiller/` to confirm clean."
+    }
+  ],
+  "suggestions": [
+    {
+      "file": "backendkiller/backendkiller_test.go",
+      "line": 59,
+      "severity": "minor",
+      "category": "testing",
+      "suggestion": "The loop `for j := 0; j < planSize; j++ { assert.Contains(t, q0, \"0 AS c0\") }` asserts the same constant string on every iteration — it never varies by j, so it is a no-op masquerading as per-expression coverage. The real per-expression check is only the two hardcoded `0 AS c0` / `4 AS c4` lines.",
+      "benefit": "Replace the loop body with `assert.Contains(t, q0, fmt.Sprintf(\"%d AS c%d\", j, j))` so every target-list expression is actually verified, matching the AC 'exactly PlanSize expressions, well-formed'.",
+      "optional": true
+    },
+    {
+      "file": "backendkiller/backendkiller.go",
+      "line": 176,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "Two independent `start := time.Now()` clocks exist: one in Run (line 112, used by the panel elapsed) and one in runLoop (line 176, used by the climax line elapsed). They are captured microseconds apart so the divergence is cosmetic, but a reader expects 'elapsed' to mean the same thing in both the panel and the climax line.",
+      "benefit": "Optionally pass the single Run-level `start` into runLoop (it already passes counter/mem) so panel-elapsed and climax-elapsed share one origin. Purely a clarity/consistency improvement.",
+      "optional": true
+    },
+    {
+      "file": "backendkiller/backendkiller.go",
+      "line": 145,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "Reported rate is `float64(cur-prev) / w.config.ReportInterval.Seconds()`, which assumes each ticker fire is exactly one ReportInterval apart. time.Ticker can coalesce/skew ticks under load (the very scenario Decision 6 cites — Exec blocked under memory pressure), so the printed rate can be inaccurate precisely when it matters.",
+      "benefit": "Dividing the counter delta by the actual elapsed wall-time since the previous tick (track a `prevTime`) yields a rate that stays correct under tick skew. Minor: the panel is a teaching aid, not a metric source.",
+      "optional": true
+    },
+    {
+      "file": "backendkiller/backendkiller.go",
+      "line": 272,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "sanitize() is best-effort: it scrubs only when a known token (`password=`, `host=`, `://`, etc.) appears, otherwise returns the full driver message. This correctly satisfies Decision 9's 'fixed message + sanitized cause' intent for the realistic pgx connect-error shapes, and Conninfo itself is never interpolated anywhere (verified). Noting it as a known limitation rather than a defect: a pgx error embedding a DSN fragment under a token not in the list would pass through.",
+      "benefit": "If stronger guarantees are ever wanted, invert the policy (return a fixed string unless the message is known-safe) or scrub on the actual Conninfo tokens. Current approach is acceptable for this destructive-workload context and matches the spec's cheap-best-effort stance.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 3,
+    "criticalIssuesCount": 1,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 4,
+    "testCoverageAssessment": "adequate"
+  }
+}

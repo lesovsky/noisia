@@ -1,0 +1,31 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 2,
+    "critical": 0,
+    "major": 0,
+    "minor": 2
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "A09: Security Logging and Monitoring",
+      "title": "sanitize() is a denylist that falls through to the raw error message",
+      "description": "sanitize() (backendkiller.go:272-285) scans the pgx error string for a fixed set of conninfo tokens ('password=', 'host=', 'user=', 'dbname=', 'database=', 'sslmode=', '://') and, only if one matches, returns the fixed string 'connection error (details suppressed)'. On any non-match it returns the raw err.Error() verbatim. This is a denylist whose safe behavior depends on the threat token appearing literally. In practice this reliably covers the documented CWE-532 threat: pgx v5 connect/Exec errors that embed a DSN do so as 'password=...' (key=value form) or 'postgres://user:secret@host' (URL form), both of which are caught (the URL form by '://'). However, the design is fragile by construction — a future pgx version, a wrapped error, or a DSN field name not in the list that nonetheless carried a credential would pass through unscrubbed because the default action is to emit the raw message rather than to suppress. All current code paths that handle a driver error (connect failure backendkiller.go:94, SET application_name backendkiller.go:103, PREPARE Exec error backendkiller.go:200, memory read warn backendkiller.go:214) correctly route through sanitize(), and no log line interpolates Conninfo directly — so Decision 9 is satisfied and there is no leak in the current code.",
+      "location": "backendkiller/backendkiller.go:272-285",
+      "impact": "No leak today. Long-term: if pgx changes its error formatting or a new error path embeds a credential without one of the listed tokens, the raw error (potentially with a DSN fragment) would reach the logs.",
+      "recommendation": "Prefer an allowlist posture: emit a fixed message plus only known-safe, structured fields (SQLSTATE / pgconn.PgError.Code, host:port already known to noisia), or unwrap to *pgconn.PgError and log only its Code/Severity/Message. If keeping the denylist, make the default-deny explicit (suppress unless the error is a recognized safe type) and add the remaining conninfo key tokens ('passfile=', 'port=', 'options=', 'service=') for completeness. Add a unit test feeding a synthetic error string containing 'password=secret' and asserting sanitize() returns the suppressed message.",
+      "cwe": "CWE-532"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "No regression test pins the no-Conninfo-leak guarantee (Decision 9)",
+      "description": "Decision 9 (no Conninfo in any log/error, including wrapped driver errors) is a security invariant, but the test suite does not lock it in. TestWorkload_Run_invalidConninfo (backendkiller_test.go:85-100) exercises the connect-failure error path but only asserts that an error is returned (assert.Error) — it does not assert that the returned error string is free of the supplied conninfo fragments. There is no test for sanitize() itself. A future change to the error-wrapping in Run() or runLoop() that accidentally interpolated the raw err (or Conninfo) would not be caught.",
+      "location": "backendkiller/backendkiller_test.go:85-100",
+      "impact": "A regression that reintroduces DSN/password leakage into logs or returned errors would pass CI undetected.",
+      "recommendation": "Add a focused unit test for sanitize() (table of inputs incl. 'password=...', 'postgres://u:p@h/db', and a benign error) and strengthen TestWorkload_Run_invalidConninfo to use a conninfo with a recognizable sentinel (e.g. password=SENTINEL_SECRET) and assert.NotContains(t, err.Error(), \"SENTINEL_SECRET\").",
+      "cwe": "CWE-532"
+    }
+  ]
+}
