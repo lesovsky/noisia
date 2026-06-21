@@ -13,7 +13,7 @@ Technical architecture overview for AI agents. Helps agents understand HOW the s
 **PostgreSQL driver:** `github.com/jackc/pgx/v5`.
 - **Why:** the most capable native PostgreSQL driver for Go; needed for low-level control over connections and protocol behaviour that the workloads exploit.
 
-**CLI parser:** `gopkg.in/alecthomas/kingpin.v2` (unmaintained — flagged for replacement during the infra release).
+**CLI parser:** `github.com/alecthomas/kingpin/v2` (maintained successor of the retired `gopkg.in/alecthomas/kingpin.v2`).
 
 **Logging:** `github.com/rs/zerolog`, wrapped behind the project's own `log.Logger` interface.
 
@@ -61,7 +61,7 @@ The repo is a Go module (`github.com/lesovsky/noisia`) with one package per work
 - `github.com/jackc/pgx/v5` — PostgreSQL driver; the core of every workload.
 - `github.com/rs/zerolog` — structured logging behind the `log.Logger` interface.
 - `golang.org/x/time` — rate limiting for workloads with a configurable rate.
-- `gopkg.in/alecthomas/kingpin.v2` — CLI flag parsing (unmaintained; replacement candidate).
+- `github.com/alecthomas/kingpin/v2` — CLI flag parsing.
 
 ---
 

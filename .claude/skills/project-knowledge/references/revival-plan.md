@@ -103,6 +103,16 @@ and the x/crypto/ssh ones pulled transitively by testcontainers (bumped to v0.53
 Remaining: stdlib `GO-2026-5037` (crypto/x509), **Fixed in go1.25.11**. The dev host
 is on go1.25.10 → close it by building on go1.25.11+ (handle in Step 3 / CI toolchain).
 
+- ✅ **Step 3 — modernize deps & toolchain DONE.**
+  - **kingpin**: unmaintained `gopkg.in/alecthomas/kingpin.v2` → maintained successor
+    `github.com/alecthomas/kingpin/v2` v2.4.0 (drop-in; same package API, only the
+    import path changed). CLI verified (`--help`/flags intact; bools now render as
+    `--[no-]flag`).
+  - **toolchain**: pinned `toolchain go1.25.11` in go.mod → closes stdlib `GO-2026-5037`.
+  - testify/zerolog/x/time/x/text/x/crypto already on current versions from earlier steps.
+  - **`govulncheck ./...` → "No vulnerabilities found"** (fully clean, incl. test deps).
+- ⬜ Step 4 (CI/release modernization) — next.
+
 ---
 
 ## CVE Snapshot (govulncheck, 2026-06-21, pre-release)
