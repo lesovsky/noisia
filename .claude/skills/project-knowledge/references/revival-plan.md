@@ -85,6 +85,24 @@ No new workloads in this release.
   on every PG version). `Test_startLoop` count assertion relaxed (`r > 0` instead of
   exactly 2) since the rate-limiter yields 2–3 iterations per second.
 
+- ✅ **Step 2 — pgx v4 → v5 DONE.** Import paths `pgx/v4*` → `pgx/v5*` (confined to
+  `db/db.go`, `db/postgres.go`; v4 fully removed from the module graph). API change:
+  `pgxpool.ConnectConfig` → `pgxpool.NewWithConfig`. **Behavior restored:** v5 pools
+  are lazy (v4's ConnectConfig was eager), so `NewPostgresDB` now `Ping`s the pool to
+  fail fast on a bad/unreachable DB — this also keeps the v4-era semantics that two
+  idlexacts tests relied on. Tests green under `-race -p 1` (repeated runs).
+- ⬜ Step 3 (modernize deps & toolchain) — next.
+
+### CVE status after Step 2 (govulncheck)
+
+All third-party reachable vulns are **closed**: pgx SQLi (GO-2024-2605/2606),
+pgproto3 DoS (GO-2026-4518, via pgx v5 → pgproto3 v3), x/text OOB (GO-2021-0113),
+and the x/crypto/ssh ones pulled transitively by testcontainers (bumped to v0.53.0).
+`govulncheck ./cmd` (the binary) reports **0 third-party vulns**.
+
+Remaining: stdlib `GO-2026-5037` (crypto/x509), **Fixed in go1.25.11**. The dev host
+is on go1.25.10 → close it by building on go1.25.11+ (handle in Step 3 / CI toolchain).
+
 ---
 
 ## CVE Snapshot (govulncheck, 2026-06-21, pre-release)
