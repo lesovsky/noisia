@@ -3,3 +3,6 @@ dist/*
 tmp/*
 .idea/*
 .test_coverage.txt
+
+# SDLC working artifacts (kept local, not published)
+docs/features/

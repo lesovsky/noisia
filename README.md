@@ -13,6 +13,7 @@
 - `terminate backends` - terminate random backends (or queries) using `pg_terminate_backend()`, `pg_cancel_backend()`.
 - `failed connections` - exhaust all available connections (other clients unable to connect to Postgres).
 - `fork connections` - execute single, short query in a dedicated connection (lead to excessive forking of Postgres backends).
+- `backend-killer` - single session leaks prepared statements (plan-cache growth) inflating its backend's memory until OOM-kill restarts the whole instance; a very large `--backend-killer.plan-size` makes each `PREPARE` heavy/slow.
 - ...see built-in help for more runtime options.
 
 #### Disclaimer
@@ -78,6 +79,7 @@ Running workloads could impact already running workloads produced by other appli
 
 | Workload  | Impact? |
 | :---         |     :---:      |
+| backendkiller  | **Yes**: a single session grows backend RSS until OOM-kill and full instance restart; a very large `plan-size` makes each `PREPARE` heavy/slow  |
 | deadlocks  | No  |
 | failconns  | **Yes**: exhaust `max_connections` limit; this leads to other clients are unable to connect to Postgres |
 | forkconns  | **Yes**: excessive creation of Postgres child processes; potentially might lead to `max_connections` exhaustion |
@@ -86,6 +88,22 @@ Running workloads could impact already running workloads produced by other appli
 | tempfiles  | **Yes**: might increase storage utilization and degrade storage performance  |
 | terminate  | **Yes**: already established database connections could be terminated accidentally  |
 | waitxacts  | **Yes**: locks heavy-write tables; this leads to blocking concurrently executed queries  |
+
+#### Tips for a reliable `backend-killer` demo
+
+`backend-killer` drives a single backend toward OOM by leaking prepared statements. How fast you reach
+the OOM kill (and the instance restart) depends on the stand:
+
+- **Cap the backend's memory** so OOM is reached in minutes, not hours: a systemd `MemoryMax=` on the
+  PostgreSQL service (you then get a cgroup/`CONSTRAINT_MEMCG` OOM), a container `--memory=...` limit, or
+  run on a small-RAM host.
+- **Disable swap** on the stand (`swapoff -a`): with swap the system slowly thrashes (the panel rate
+  drops toward `0/s` — memory pressure, not a hang) instead of OOM-killing promptly.
+- **Turn up the pressure** with `--backend-killer.plan-size` (heavier plans per `PREPARE`); raise
+  `--backend-killer.rate` is unbounded by default.
+
+When OOM fires, the backend is killed, the instance restarts, noisia's connection drops, and it logs a
+`connection lost … target likely OOM-restarted` line — its self-report survives the crash.
 
 #### Contribution
 - PR's are welcome.
