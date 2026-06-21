@@ -146,6 +146,10 @@ connection lost after 4m20s, 2128000 statements issued — target likely OOM-res
   идиома цикла, что в `rollbacks`/`tempfiles`.
 - **`--show-memory` на PG < 14:** `pg_backend_memory_contexts` отсутствует → деградировать
   мягко (пропустить строку памяти / предупредить один раз), счётчик оставить.
+- **Сбой чтения памяти при `--show-memory` (например, около OOM):** это per-tick
+  восстановимая ошибка — пропустить поле памяти, `Warnf` один раз, продолжить. Кульминацию
+  «likely OOM-restarted» триггерит **только** обрыв соединения на `PREPARE`, а не на чтении
+  памяти.
 
 ## Критерии приёмки
 - [ ] Флаг `--backend-killer` включает нагрузку; присутствуют флаги `--backend-killer.rate`

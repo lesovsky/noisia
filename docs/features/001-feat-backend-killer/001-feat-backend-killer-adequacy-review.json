@@ -2,27 +2,13 @@
   "status": "approved",
   "findings": [
     {
-      "category": "overengineering",
-      "severity": "major",
-      "issue": "Auto plan-size detection via cgroup + procfs is net-new, brittle infrastructure code with no precedent in the project, and it is the dominant complexity driver of the feature while being explicitly only a heuristic ('не гарантия точного момента OOM'). The spec already provides --backend-killer.plan-size (explicit override) and --backend-killer.size-multiplier as controls.",
-      "why_matters": "noisia has zero existing procfs/cgroup parsing code; all workloads are thin pgx loops. cgroup v2 memory.max can be the literal string 'max', v1 paths differ across kernels, and inside a container /proc/meminfo reports host RAM (the spec itself acknowledges all three pitfalls). The heuristic also only works when noisia is co-located with PG — for remote PG it is meaningless and the user must override anyway. This adds the feature's biggest test/maintenance surface and brittleness to deliver a convenience that is fundamentally approximate and frequently inapplicable.",
-      "fix": "Consider deferring auto-detection for the first cut: ship a sane default plan-size + size-multiplier + explicit override, and let the DBA tune on the stand (their job in the demo). If auto-detection is kept, scope it tightly to cgroup v2 only with a clean fallback to a default constant (not full procfs+cgroupv1 parsing), and make the brittleness/co-location requirement an explicit acceptance criterion rather than a heuristic buried in edge cases."
-    },
-    {
-      "category": "feasibility",
-      "severity": "minor",
-      "issue": "The spec describes the leak mechanism as 'continuously issue unique PREPARE' but does not pin down HOW it is issued through the db.Conn interface relative to pgx v5's own statement-handling. pgx v5 with the extended protocol maintains its own client-side statement cache and prepares statements implicitly.",
-      "why_matters": "If the workload calls conn.Exec(ctx, 'PREPARE stmtN AS SELECT $1::int') as literal SQL text it correctly leaks SERVER-side plan cache (the intended effect). But if implemented as pgx-level prepared statements, the leak semantics and where memory grows differ, and unique names matter differently. The code-research notes the literal-SQL approach ('SELECT $1::int' with a unique name) which is the right one — but the user-spec is the WHAT/WHY artifact and the mechanism is feasible, so this is a low-risk note to verify at tech-spec time, not a blocker.",
-      "fix": "No change needed in user-spec (mechanism detail belongs in tech-spec). Flag for tech-spec: confirm the leak is driven by literal 'PREPARE <unique-name> AS ...' SQL via conn.Exec so the growth is server-side backend plan cache, and validate that target-list width (plan-size) actually scales per-statement memory as assumed."
-    },
-    {
       "category": "underengineering",
       "severity": "minor",
-      "issue": "The 'culmination' detection relies on distinguishing an OOM-induced connection drop from any other connection error while ctx is still live. The spec says to print the culmination line 'при обрыве собственного соединения (OOM) и активном context', but a transient network error or admin-issued pg_terminate_backend would produce the same broken-connection error and trigger a false 'target likely OOM-restarted' message.",
-      "why_matters": "In a teaching context a misleading culmination line ('target likely OOM-restarted') asserted when the instance did NOT actually OOM undermines the educational value. The spec already hedges with 'likely', which is reasonable, but the behavior on a non-OOM mid-run error is not addressed.",
-      "fix": "Acceptance criteria already say any conn error with live ctx prints culmination + returns nil. Confirm this is intended even for non-OOM disconnects, or add a note that the message is best-effort ('likely') and that a non-OOM disconnect is treated identically by design. No structural change required."
+      "issue": "The optional --show-memory read (SELECT sum(used_bytes) FROM pg_backend_memory_contexts) runs on the very backend being inflated. The spec covers PG<14 graceful degradation, but does not state how a memory-read failure near OOM is handled relative to the culmination signal.",
+      "why_matters": "Close to OOM the memory-read query may error before the next PREPARE does. If that error is treated as the connection-lost culmination, the panel could print 'likely OOM-restarted' prematurely; if it spams Warnf each interval it muddies the demo. The edge case sits between the documented 'PREPARE error mid-run -> Warnf and continue' and 'connection break -> culmination' paths.",
+      "fix": "Add one sentence: a failed --show-memory read mid-run is treated like a per-tick recoverable error (skip the memory field, Warnf at most once, continue); only a genuine broken connection on the PREPARE path triggers the culmination line."
     }
   ],
-  "worst_category": "overengineering",
-  "summary": "Approved: the core mechanism (single db.Connect session leaking unique server-side PREPAREs to grow backend RSS until OOM, with an in-process self-report panel and optional pg_backend_memory_contexts read) is fully feasible on the existing pgx v5 / db-interface / kingpin / rate stack, correctly single-threaded, and well right-sized at M with the testcontainers mechanics-only test approach. Main concern is the auto plan-size detection via cgroup+procfs — net-new brittle infrastructure that is the feature's largest complexity/maintenance surface yet only a co-location-dependent heuristic already backed by explicit override and multiplier; consider deferring or tightly scoping it for the first cut."
+  "worst_category": "underengineering",
+  "summary": "Round-2: the round-1 MAJOR overengineering concern is fully resolved — auto plan-size detection (procfs/cgroup) and the size-multiplier flag are removed, and the spec now documents the explicit decision against them. Remaining scope is feasible on the existing stack (single db.Connect, literal PREPARE via conn.Exec, rate.NewLimiter pacing, logger.Infof panel, pg_backend_memory_contexts with PG14+ graceful degradation), correctly sized M with mechanics-only testcontainers tests, and well-edged. Approved with one minor underengineering note about the near-OOM failure path of the optional memory read."
 }

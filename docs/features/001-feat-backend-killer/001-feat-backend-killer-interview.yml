@@ -237,6 +237,8 @@ phase2_user_experience:
       - rate=0 (unlimited) must not busy-spin pathologically — follow rollbacks/tempfiles loop idiom.
       - show-memory on PG < 14: pg_backend_memory_contexts absent → degrade gracefully (skip the
         memory line / warn once), keep the counter.
+      - show-memory read failure near OOM: per-tick recoverable (skip the memory field, Warnf once,
+        continue); only a broken PREPARE connection triggers the "likely OOM-restarted" climax.
     gaps: ""
     required: true
 

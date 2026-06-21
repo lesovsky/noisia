@@ -1,77 +1,53 @@
 {
-  "status": "changes_required",
+  "status": "approved",
   "checks": {
-    "completeness": "fail",
+    "completeness": "pass",
     "edge_cases": "pass",
     "acceptance_criteria": "pass",
     "contradictions": "pass",
     "template_compliance": "pass",
-    "size_check": "pass",
+    "size_check": "warning",
     "clarity": "pass"
   },
   "findings": [
     {
-      "check": "completeness",
-      "severity": "critical",
-      "issue": "Сценарий ошибки, явно обсуждённый в интервью (error_scenarios + integration_points), отсутствует в спеке: 'не удалось подключиться на старте → вернуть err (setup failure), как у других нагрузок'. В спеке нет ни критерия приёмки, ни граничного случая для неудачного начального подключения.",
-      "location": "Как должно работать → Граничные случаи / Критерии приёмки",
-      "fix": "Добавить граничный случай и/или критерий приёмки: при ошибке начального db.Connect нагрузка возвращает error (а не nil) — это setup failure, в отличие от обрыва соединения в середине прогона (который = кульминация и успех)."
-    },
-    {
-      "check": "completeness",
-      "severity": "critical",
-      "issue": "Сценарий ошибки из интервью отсутствует в спеке: 'PREPARE возвращает ошибку (плохой сгенерированный SQL) посреди прогона → Warnf и продолжить (per-tick error idiom)'. Это явно проговорено в interview error_scenarios, но в спеке поведение при ошибке PREPARE (отличной от обрыва соединения) не описано — образуется неоднозначность между 'обрыв соединения = успех' и 'обычная ошибка запроса'.",
-      "location": "Как должно работать → Граничные случаи / Критерии приёмки",
-      "fix": "Добавить описание: ошибка PREPARE, не являющаяся обрывом соединения, логируется через Warnf и цикл продолжается; отличать обрыв соединения (кульминация, nil) от прочих ошибок запроса."
-    },
-    {
-      "check": "completeness",
-      "severity": "major",
-      "issue": "Риск из интервью не перенесён в спек: 'собственная клиентская память noisia — prepared statements живут на сервере, клиент держит только счётчик + имена; убедиться, что нет client-side утечки'. В разделе Риски спека этого пункта нет.",
-      "location": "Риски",
-      "fix": "Добавить риск: возможная клиентская утечка памяти в самой noisia (имена/счётчики statements). Митигация: prepared statements хранятся серверно, клиент держит лёгкий footprint; проверить отсутствие client-side роста."
-    },
-    {
-      "check": "completeness",
+      "check": "size_check",
       "severity": "minor",
-      "issue": "Граничный случай из интервью не перенесён: 'plan-size задан очень большим — один PREPARE сам по себе может быть тяжёлым/медленным — приемлемо, задокументировать'. В Граничных случаях спека этого нет.",
-      "location": "Как должно работать → Граничные случаи",
-      "fix": "Добавить граничный случай: очень большой plan-size делает отдельный PREPARE тяжёлым/медленным — это ожидаемо и допустимо, упомянуть в README/доке."
+      "issue": "Объявлен размер M, но критериев приёмки 14 (порог >10 даёт warning). Объём оправдан: критерии тесно описывают единый CLI-флаговый интерфейс одной нагрузки, пользовательских flow два, интеграция одна (PostgreSQL). Реального несоответствия размеру нет.",
+      "location": "Frontmatter (size: M) / Критерии приёмки",
+      "fix": "Можно оставить как есть, либо осознанно подтвердить размер M — объём связный и не раздувает скоуп. При желании часть AC по флагам объединить в один пункт."
     }
   ],
   "interview_coverage": {
     "covered": [
-      "memory mechanism = variant B (incremental single-session growth)",
-      "concrete mechanism = prepared-statement / plan-cache leak",
-      "self-report metric (prepared stmt count + rate + elapsed)",
-      "climax via own-connection-loss detection",
-      "single dedicated db.Connect connection, not pool",
-      "single-threaded, no --jobs",
-      "no pre-seeding (self-generated load)",
-      "user stories US1 (lead DBA) + US2 (SRE)",
-      "escalation panel format + cadence flag (report-interval, default 1s)",
-      "flags: enable + rate(0=unlimited) + plan-size(0=auto) + size-multiplier + show-memory + report-interval",
-      "show-memory hybrid line via pg_backend_memory_contexts (PG14+, graceful degrade below 14)",
-      "auto plan-size: cgroup limit -> /proc/meminfo, co-location caveat, size-multiplier scaling",
-      "auto plan-size is heuristic, not exact-OOM guarantee",
-      "rejected mechanisms: opaque blocking query (A), many sessions (C), held-cursors, work_mem",
-      "testing: mechanics not catastrophe, testcontainers, monotonic counter + clean ctx stop, no real OOM",
-      "Config.validate() table test",
-      "README impact table = Yes + disclaimer (no guardrails)",
-      "Conninfo never logged",
-      "ctx cancelled before OOM -> clean stop (nil)",
-      "rate=0 must not busy-spin pathologically (rollbacks/tempfiles idiom)",
-      "target restarts/returns -> no reconnect loop, run ends",
-      "PREPARE name uniqueness via monotonic counter",
-      "destructive workload risk + CI safety risk + secret leakage risk + auto plan-size mis-detection risk",
-      "noisia conventions: own package, Config+validate, NewWorkload, Run(ctx), pgx v5 via db interfaces"
+      "механизм variant B (инкрементальный рост в одной сессии)",
+      "утечка prepared statements / рост plan cache как триггер OOM",
+      "самоотчёт (счётчик stmts + темп + время) как основной канал",
+      "кульминация через обрыв собственного соединения noisia",
+      "формулировка 'likely OOM-restarted' (нельзя отличить OOM от иного обрыва)",
+      "одно выделенное соединение (db.Connect), не пул",
+      "однопоточность (без --jobs), без предзасева",
+      "флаги: enable + rate (0=без лимита) + plan-size + show-memory + report-interval",
+      "панель эскалации, формат вывода, без процент-бара",
+      "гибридная строка памяти своего backend'а (--show-memory, pg_backend_memory_contexts, PG14+ с мягкой деградацией)",
+      "стратегия тестирования: механика, не реальный OOM в CI; testcontainers; -p 1",
+      "Config.validate() table-тест",
+      "две пользовательские истории (ведущий DBA, SRE)",
+      "ошибка подключения на старте → init error (отдельно от обрыва в середине)",
+      "ошибка PREPARE в середине прогона → Warnf и продолжение",
+      "клиентская память noisia (риск client-side утечки)",
+      "очень большой plan-size как граничный случай (тяжёлый/медленный PREPARE)",
+      "большой RAM на стенде → повышать plan-size",
+      "уникальность имён PREPARE из монотонного счётчика",
+      "context отменён до OOM → чистая остановка (nil)",
+      "обрыв соединения не из-за OOM (сеть, pg_terminate_backend)",
+      "инстанс перезапустился и вернулся (нет цикла переподключения)",
+      "rate=0 без busy-loop (идиома rollbacks/tempfiles)",
+      "риски: разрушительность, небезопасность для CI, утечка секрета, show-memory на старом PG",
+      "конвенции пакета-нагрузки noisia (Config/validate/NewWorkload/Run, pgx v5, context как механизм остановки, Conninfo не логировать)",
+      "README обновление (bullet + impact таблица, impact=Yes, дисклеймер без guardrails)"
     ],
-    "missing": [
-      "error scenario: cannot connect at start -> return err (setup failure)",
-      "error scenario: PREPARE returns query error mid-run -> Warnf and continue",
-      "risk: noisia's own client-side memory footprint / verify no client-side leak",
-      "edge case: plan-size set very high -> single PREPARE itself heavy/slow (document)"
-    ]
+    "missing": []
   },
-  "summary": "Спек структурно полон, шаблону соответствует, критерии приёмки конкретны и тестируемы, противоречий и расплывчатых формулировок нет. Однако из интервью в спек не перенесены два явно проговорённых сценария ошибок (неудачное подключение на старте → err; ошибка PREPARE в середине → Warnf+continue) — это критично, плюс потеряны риск клиентской памяти и граничный случай большого plan-size. Требуются правки раздела обработки ошибок."
+  "summary": "Раунд 2: APPROVED. Все 4 потерянных в раунде 1 топика возвращены в spec (ошибка подключения на старте → err; ошибка PREPARE в середине → Warnf+continue; риск клиентской памяти; граничный случай большого plan-size). Удаление auto plan-size и size-multiplier согласованно отражено и в spec, и в interview.yml (Q5, заметки, technical_decisions) — потерями не считается. Критерии тестируемы, граничные и ошибочные случаи покрыты, противоречий и вредной неоднозначности нет. Единственное замечание — minor warning по size_check (14 AC при M); объём оправдан, блокеров нет."
 }
