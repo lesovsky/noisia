@@ -4,8 +4,10 @@ import (
 	"context"
 )
 
-// TestConninfo defines connection string to test database.
-const TestConninfo = "host=postgres user=noisia database=noisia_fixtures"
+// TestConninfo defines connection string to the test database. It is populated
+// at test time by internal/dbtest.RunMain (from each package's TestMain) and
+// points to a throwaway PostgreSQL container.
+var TestConninfo string
 
 // NewTestDB creates connection for test database.
 func NewTestDB() (DB, error) {

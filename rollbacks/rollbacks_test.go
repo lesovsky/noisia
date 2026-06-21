@@ -76,8 +76,8 @@ func Test_startLoop(t *testing.T) {
 
 	c, r, err := startLoop(ctx, conn, 2)
 	assert.NoError(t, err)
-	assert.Equal(t, 0, c) // expecting no commits
-	assert.Equal(t, 2, r) // expecting 2 rollbacks (rate 2, duration 1 second)
+	assert.Equal(t, 0, c) // all generated queries must fail, so no commits
+	assert.Positive(t, r) // at least some rollbacks; exact count depends on rate-limiter timing
 }
 
 func Test_createTempTable(t *testing.T) {

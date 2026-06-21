@@ -41,9 +41,10 @@ For universal coding standards, see `~/.claude/skills/code-writing/references/un
 ### Test Infrastructure
 
 - **Type:** integration-heavy. Most workload tests connect to a real PostgreSQL and assert observable effects via server-side state (`pg_stat_activity`, `pg_stat_database`, temp-file counters).
-- **Current harness:** `db/testing.go` hardcodes `TestConninfo = "host=postgres user=noisia database=noisia_fixtures"`. In CI a `postgres` service container provides that host; **locally this does not resolve** — a PostgreSQL reachable as host `postgres` must be provided.
-- **Planned:** migrate the harness to **testcontainers-go** (`modules/postgres`) so the same test code runs identically locally and in CI. See [revival-plan.md](revival-plan.md).
-- **Run:** `make test` → `go test -race -timeout 300s -coverprofile=... ./...`.
+- **Harness:** **testcontainers-go** (`modules/postgres`). `db.TestConninfo` is a `var` populated at test time; the container is started in `internal/dbtest.RunMain`, which each package calls from its `TestMain`. `internal/dbtest` is imported only from `*_test.go`, so testcontainers/docker deps never enter the noisia binary.
+- **Isolation:** one PostgreSQL container **per test package** (automatic cross-package isolation). Must run **serially** (`-p 1`) — workloads mutate server-wide state, and parallel containers also destabilize tight per-test timings.
+- **Requirement:** a working Docker daemon. No manual DB setup — same command locally and in CI.
+- **Run:** `make test` → `go test -race -timeout 300s -p 1 -coverprofile=... ./...`.
 
 ### Verifying a workload manually
 
@@ -53,17 +54,13 @@ Run the workload against a scratch PostgreSQL and confirm the expected symptom a
 - temp files → rising `pg_stat_database.temp_files`
 - failconns → new client connections rejected (`max_connections` exhausted)
 
-### Local integration test baseline (verified)
+### Running tests
 
-Reproduce CI locally without code changes:
+With Docker available, just:
 ```bash
-docker network create noisia-test
-docker run -d --name noisia-pg --network noisia-test --network-alias postgres \
-  -e POSTGRES_DB=noisia_fixtures -e POSTGRES_USER=noisia \
-  -e POSTGRES_HOST_AUTH_METHOD=trust postgres:15-alpine
-docker run --rm --network noisia-test -v "$PWD":/app -w /app \
-  golang:1.19 go test -race -timeout 300s ./...
+make test          # or: go test -race -timeout 300s -p 1 ./...
 ```
+testcontainers starts/stops PostgreSQL automatically; nothing else to set up.
 
 ---
 
