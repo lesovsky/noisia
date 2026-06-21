@@ -1,0 +1,40 @@
+{
+  "status": "approved",
+  "summary": "Checked 28 claims, found 0 mirages. All file paths, function/method signatures, package dependencies, CLI wiring shape, loop idioms, test harness, and README references in the tech-spec match the actual noisia codebase.",
+  "findings": [],
+  "stats": {
+    "total_claims_checked": 28,
+    "confirmed": 28,
+    "mirages_found": 0,
+    "verified_claims": [
+      "db.Connect(ctx, connString) (Conn, error) — db/postgres.go:113",
+      "Conn.Exec(ctx, sql, args...) (int64, string, error) — db/db.go:26, db/postgres.go:136",
+      "Conn.Close() error — db/db.go:28, db/postgres.go:150",
+      "Conn interface (Begin/Exec/Query/Close) — db/db.go:24-29",
+      "rate.Inf = Limit(math.MaxFloat64) — x/time@v0.11.0/rate/rate.go:22",
+      "rate.Limit (type Limit float64) — rate.go:19",
+      "rate.NewLimiter(r Limit, b int) — rate.go:100",
+      "Limiter.Allow() bool — rate.go:109",
+      "golang.org/x/time v0.11.0 resolved (go.mod + go.sum + go list)",
+      "rollbacks startLoop rate.NewLimiter+Allow+select{ctx.Done()} idiom — rollbacks/rollbacks.go:111-141",
+      "tempfiles ctx.Err()==nil guard before Warnf — tempfiles/tempfiles.go:138-146",
+      "rollbacks Config/validate/workload/NewWorkload canonical shape — rollbacks/rollbacks.go:32-69",
+      "rollbacks/runWorker single db.Connect model — rollbacks/rollbacks.go:93-108",
+      "tempfiles countTempBytes Query/Scan + defer conn.Close pattern — tempfiles/tempfiles.go:181-198",
+      "cmd/main.go var() flag block with .Default()/.Envar() terminators — main.go:19-49",
+      "cmd/main.go config{} literal populated from flag derefs — main.go:59-88",
+      "cmd/app.go config struct fields — app.go:18-46",
+      "cmd/app.go context.WithTimeout(ctx, c.duration) — app.go:50",
+      "cmd/app.go if c.X { wg.Add; go startXWorkload } launch blocks — app.go:54-149",
+      "cmd/app.go startXWorkload(ctx, c, logger) helper shape — app.go:156-186",
+      "cmd/app.go import block alphabetical (failconns:6, forkconns:7) — app.go:3-15",
+      "log.Logger interface Info/Infof/Warn/Warnf/Error/Errorf — log/log.go:4-11",
+      "log.NewDefaultLogger(level) — log/zerolog.go:21",
+      "internal/dbtest.RunMain(m) — internal/dbtest/dbtest.go:27",
+      "db.TestConninfo package var — db/testing.go:10",
+      "main_test.go one-liner TestMain->dbtest.RunMain — rollbacks/main_test.go",
+      "README bullet list + impact table present — README.md:7-16, 79-88",
+      "Makefile go test -race -p 1 serial constraint — Makefile:31"
+    ]
+  }
+}

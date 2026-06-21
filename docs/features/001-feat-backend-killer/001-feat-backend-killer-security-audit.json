@@ -1,0 +1,51 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 4,
+    "critical": 0,
+    "major": 2,
+    "minor": 2
+  },
+  "findings": [
+    {
+      "severity": "major",
+      "category": "A09: Security Logging and Monitoring",
+      "title": "Connect-error and per-tick Exec-error log lines may leak Conninfo via the error string",
+      "description": "The spec correctly mandates that Conninfo is never logged directly in the escalation panel and climax line. However, two error paths log a raw err: (1) the start-time connect failure (Decision 3 in 'How it works' / AC: 'Connect failure at start => init error') and (2) the per-tick non-connection query error ('Warnf + continue'). db.Connect wraps pgx.Connect (db/postgres.go:113), which returns the error verbatim with no scrubbing. pgx/libpq error messages for connect failures can embed connection parameters (host, port, dbname, user) and, depending on driver/version and how the conninfo is malformed, the surrounding context of the connection string. If the workload follows the rollbacks convention of 'log.Warnf(\"...: %s\", err)' (rollbacks/rollbacks.go:82,103), a Conninfo that contains 'password=...' embedded in a malformed DSN could surface in logs. The spec does not state HOW these two error strings are rendered safely.",
+      "location": "Section: Architecture > How it works (steps 2,5); Section: Acceptance Criteria (connect-failure init error, non-connection query error => Warnf)",
+      "impact": "Password or other credential fragments from Conninfo could appear in stdout/log aggregation, violating the spec's own 'Conninfo never logged' guarantee and exposing the target DB credential.",
+      "recommendation": "Mandate in the spec that NO raw error originating from db.Connect or Conn.Exec is logged with the conninfo in scope without scrubbing. Concretely: (a) for the init connect error, return it up the stack (as rollbacks does) and rely on the caller to log a generic 'backend-killer: connect failed' WITHOUT interpolating conninfo; ensure the returned error itself does not echo the DSN. (b) For per-tick query errors, log only a generic message plus the PostgreSQL SQLSTATE/server message, never the connection string. Add an explicit AC: 'no log line interpolates Conninfo, including indirectly via wrapped connect/exec errors'.",
+      "cwe": "CWE-532"
+    },
+    {
+      "severity": "major",
+      "category": "A09: Security Logging and Monitoring",
+      "title": "application_name not set on the dedicated Connect path, reducing operator attribution/auditability",
+      "description": "The pool path (db.NewPostgresDB) sets config.ConnConfig.RuntimeParams[\"application_name\"]=\"noisia\" (db/postgres.go:23), giving operators a clear audit signal in pg_stat_activity. The dedicated db.Connect path (db/postgres.go:113, used by this workload per 'How it works' step 2) calls pgx.Connect with the raw conninfo and does NOT set application_name. For a deliberately destructive workload whose whole purpose is to OOM a backend, the inability to attribute the offending backend to 'noisia' in pg_stat_activity weakens incident response and accountability on a shared/production-adjacent stand.",
+      "location": "Section: Architecture > How it works (step 2: db.Connect(ctx, conninfo)); db/postgres.go:113",
+      "impact": "A DBA investigating an OOM/restart cannot quickly identify the noisia backend-killer session as the source, slowing containment of a destructive workload that may have been run unintentionally or against the wrong target.",
+      "recommendation": "Note in the spec that the dedicated connection should carry application_name=noisia (e.g. by appending to the conninfo or via ParseConfig + RuntimeParams before Connect), matching the pool path, so the destructive session is auditable in pg_stat_activity. This is a self-attribution control consistent with the 'self-report' principle the spec already adopts.",
+      "cwe": "CWE-778"
+    },
+    {
+      "severity": "minor",
+      "category": "A03: Injection",
+      "title": "Heavy-PREPARE SQL is built by string concatenation; confirm the design forbids any string-typed input in the builder",
+      "description": "The heavy PREPARE is assembled as 'PREPARE noisia_bk_<i> AS SELECT 0 AS c0, ... (N-1) AS c{N-1}' (Decision 3), where both <i> (monotonic int counter) and N (PlanSize int, validated >=1) are internal integers, not user free-text. This is NOT an injection vector as designed: there is no string-typed, externally-controlled value placed into the SQL. The design is sound. The residual risk is purely a future-regression one: the builder takes ints today, but the spec does not explicitly prohibit ever sourcing the statement name suffix or column-count from a string/format-flexible source, and Conn.Exec here is used WITHOUT bind args (Decision 3: 'no bind args') because PREPARE text cannot be parameterized for its body.",
+      "location": "Section: Decisions > Decision 3 (heavy plan builder); Section: Data Models (PlanSize int)",
+      "impact": "None in the current design (int-only inputs). If a later change introduced any string input into the builder, the arg-free Conn.Exec concatenation pattern would become an injection vector.",
+      "recommendation": "Add an explicit design note/AC: the PREPARE builder accepts only validated integers (counter and PlanSize); statement names are derived solely from the int counter via integer formatting (e.g. fmt.Sprintf with %d), never from any string input; PlanSize is range-validated (>=1, and consider an upper bound, see separate finding). This pins the no-injection property against regression. Cover it with the unit test already planned for the builder.",
+      "cwe": "CWE-89"
+    },
+    {
+      "severity": "minor",
+      "category": "A04: Insecure Design",
+      "title": "PlanSize has a lower bound but no upper bound; an extreme value can exhaust client/server memory before the intended OOM dynamics",
+      "description": "validate() enforces PlanSize >= 1 but no maximum (Data Models / AC). PlanSize is operator-supplied via --backend-killer.plan-size and .Envar(). A very large value (e.g. millions) makes each generated PREPARE string itself enormous, consuming large amounts of client-side memory in noisia to build the statement and producing pathological parse-time/memory on the server in a way that is uncontrolled rather than the intended gradual plan-cache growth. For a destructive tool this is partly 'by design', but an unbounded int from env/CLI building an in-memory string is a resource-consumption footgun (e.g. accidental extra zero) with no guardrail.",
+      "location": "Section: Data Models (validate rules: PlanSize >= 1); Section: Architecture (5 flags incl. .plan-size with .Envar())",
+      "impact": "Accidental oversized plan-size could OOM the noisia client process itself, or cause an immediate single-statement server failure that does not exercise the intended cumulative plan-cache behavior, and is harder to reason about. Within noisia's destructive intent the impact is bounded, hence minor.",
+      "recommendation": "Consider a sane upper bound (or at least a documented soft cap with a warning) on PlanSize in validate(), and document the memory cost per statement so operators choose values intentionally. This is a defense-against-mistakes control, not a change to the destructive feature.",
+      "cwe": "CWE-770"
+    }
+  ]
+}
