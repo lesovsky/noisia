@@ -197,7 +197,8 @@ slot keeps pinning the WAL it already accumulated. Recover the instance step by 
 2. **Reclaim ext-filesystem root-reserved blocks.** On ext2/3/4 a percentage of the volume is reserved
    for root and is invisible to a non-root process; reclaiming it often frees just enough to start the
    instance: `tune2fs -m 1 /dev/<wal-or-pgdata-device>` (lowers the reserve to 1%; `-m 0` removes it
-   entirely).
+   entirely). Restore a sane reserve (e.g. `-m 5`) once recovery is done — leaving it at `0` permanently
+   risks fragmentation and a future no-space deadlock.
 3. **Drop the orphaned slot.** The clean way is `SELECT pg_drop_replication_slot('noisia_slotbloat_xxx');`
    once the server is back up (the slot name is in noisia's log under `--keep-slot` or when the auto-drop
    failed). If the instance still cannot start because of the pinned WAL, remove the slot physically —
