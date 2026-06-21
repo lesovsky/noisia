@@ -13,6 +13,7 @@
 - `terminate backends` - terminate random backends (or queries) using `pg_terminate_backend()`, `pg_cancel_backend()`.
 - `failed connections` - exhaust all available connections (other clients unable to connect to Postgres).
 - `fork connections` - execute single, short query in a dedicated connection (lead to excessive forking of Postgres backends).
+- `backend-killer` - single session leaks prepared statements (plan-cache growth) inflating its backend's memory until OOM-kill restarts the whole instance; a very large `--backend-killer.plan-size` makes each `PREPARE` heavy/slow.
 - ...see built-in help for more runtime options.
 
 #### Disclaimer
@@ -78,6 +79,7 @@ Running workloads could impact already running workloads produced by other appli
 
 | Workload  | Impact? |
 | :---         |     :---:      |
+| backendkiller  | **Yes**: a single session grows backend RSS until OOM-kill and full instance restart; a very large `plan-size` makes each `PREPARE` heavy/slow  |
 | deadlocks  | No  |
 | failconns  | **Yes**: exhaust `max_connections` limit; this leads to other clients are unable to connect to Postgres |
 | forkconns  | **Yes**: excessive creation of Postgres child processes; potentially might lead to `max_connections` exhaustion |

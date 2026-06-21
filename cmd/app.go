@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"github.com/lesovsky/noisia/backendkiller"
 	"github.com/lesovsky/noisia/deadlocks"
 	"github.com/lesovsky/noisia/failconns"
 	"github.com/lesovsky/noisia/forkconns"
@@ -16,34 +17,39 @@ import (
 )
 
 type config struct {
-	logger                log.Logger
-	postgresConninfo      string
-	jobs                  uint16 // max 65535
-	duration              time.Duration
-	idleXacts             bool
-	idleXactsNaptimeMin   time.Duration
-	idleXactsNaptimeMax   time.Duration
-	rollbacks             bool
-	rollbacksRate         float64
-	waitXacts             bool
-	waitXactsFixture      bool
-	waitXactsLocktimeMin  time.Duration
-	waitXactsLocktimeMax  time.Duration
-	deadlocks             bool
-	tempFiles             bool
-	tempFilesRate         float64
-	terminate             bool
-	terminateInterval     time.Duration
-	terminateRate         uint16
-	terminateSoftMode     bool
-	terminateIgnoreSystem bool
-	terminateClientAddr   string
-	terminateUser         string
-	terminateDatabase     string
-	terminateAppName      string
-	failconns             bool
-	forkconns             bool
-	forkconnsRate         uint16
+	logger                      log.Logger
+	postgresConninfo            string
+	jobs                        uint16 // max 65535
+	duration                    time.Duration
+	idleXacts                   bool
+	idleXactsNaptimeMin         time.Duration
+	idleXactsNaptimeMax         time.Duration
+	rollbacks                   bool
+	rollbacksRate               float64
+	waitXacts                   bool
+	waitXactsFixture            bool
+	waitXactsLocktimeMin        time.Duration
+	waitXactsLocktimeMax        time.Duration
+	deadlocks                   bool
+	tempFiles                   bool
+	tempFilesRate               float64
+	terminate                   bool
+	terminateInterval           time.Duration
+	terminateRate               uint16
+	terminateSoftMode           bool
+	terminateIgnoreSystem       bool
+	terminateClientAddr         string
+	terminateUser               string
+	terminateDatabase           string
+	terminateAppName            string
+	failconns                   bool
+	forkconns                   bool
+	forkconnsRate               uint16
+	backendKiller               bool
+	backendKillerRate           float64
+	backendKillerPlanSize       int
+	backendKillerShowMemory     bool
+	backendKillerReportInterval time.Duration
 }
 
 func runApplication(ctx context.Context, c config, log log.Logger) error {
@@ -143,6 +149,18 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 			err := startForkconnsWorkload(ctx, c, log)
 			if err != nil {
 				log.Errorf("fork connections workload failed: %s", err)
+			}
+			wg.Done()
+		}()
+	}
+
+	if c.backendKiller {
+		log.Info("start backend-killer workload")
+		wg.Add(1)
+		go func() {
+			err := startBackendKillerWorkload(ctx, c, log)
+			if err != nil {
+				log.Errorf("backend-killer workload failed: %s", err)
 			}
 			wg.Done()
 		}()
@@ -271,6 +289,23 @@ func startForkconnsWorkload(ctx context.Context, c config, logger log.Logger) er
 			Conninfo: c.postgresConninfo,
 			Rate:     c.forkconnsRate,
 			Jobs:     c.jobs,
+		}, logger,
+	)
+	if err != nil {
+		return err
+	}
+
+	return workload.Run(ctx)
+}
+
+func startBackendKillerWorkload(ctx context.Context, c config, logger log.Logger) error {
+	workload, err := backendkiller.NewWorkload(
+		backendkiller.Config{
+			Conninfo:       c.postgresConninfo,
+			Rate:           c.backendKillerRate,
+			PlanSize:       c.backendKillerPlanSize,
+			ShowMemory:     c.backendKillerShowMemory,
+			ReportInterval: c.backendKillerReportInterval,
 		}, logger,
 	)
 	if err != nil {

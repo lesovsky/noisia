@@ -275,7 +275,7 @@ behavior changes. **Breaking changes:** no.
 
 ### Wave 2 (зависит от Wave 1)
 
-#### Task 2: Wire backend-killer into the CLI
+#### Task 2: Wire backend-killer into the CLI ✅ done
 - **Description:** Register the workload in the CLI: declare the 5 flags with defaults/envars and the
   `config{}` literal entries in `cmd/main.go`, and add the package import, `config` struct fields, the
   launch `if`-block under the shared `--duration` context, and the start helper in `cmd/app.go`. No
@@ -286,7 +286,7 @@ behavior changes. **Breaking changes:** no.
 - **Files to modify:** `cmd/main.go`, `cmd/app.go`
 - **Files to read:** `cmd/main.go`, `cmd/app.go`, `backendkiller/backendkiller.go`
 
-#### Task 3: Update README
+#### Task 3: Update README ✅ done
 - **Description:** Document the new workload in `README.md`: add it to the supported-workloads bullet
   list and add a row to the impact table with impact = Yes (can crash the instance via OOM). Note the
   operational caveat that a very large `plan-size` makes each `PREPARE` heavy/slow.

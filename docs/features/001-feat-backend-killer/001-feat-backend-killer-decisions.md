@@ -25,3 +25,28 @@ green (3x), `gofmt -l` clean, `go vet` clean.
 
 All blocking findings fixed; remaining items were optional production-code suggestions intentionally
 not changed (best-effort `sanitize` denylist, panel-rate skew) per spec known-limitations.
+
+## Task 02 — Wire backend-killer into the CLI
+
+Wired the workload into `cmd/main.go` (5 flags with unique envars + `config{}` literal entries) and
+`cmd/app.go` (import placed first/alphabetically before `deadlocks`, config struct fields, launch
+`if`-block under the shared `--duration` context, and the `startBackendKillerWorkload` helper). No
+`--jobs` (single-threaded); the `wait-xacts`→`NOISIA_IDLE_XACTS` envar quirk was deliberately not
+copied (all envars unique). Verified: `go build ./...`, `go vet ./...`, `gofmt -l cmd/` clean; `--help`
+lists all 5 flags with correct defaults.
+
+### Reviews
+- dev-code-reviewer — [json](001-feat-backend-killer-task-02-dev-code-reviewer-review.json) — approved, 0 findings.
+- dev-security-auditor — [json](001-feat-backend-killer-task-02-dev-security-auditor-review.json) — approved, 0 findings.
+- dev-test-reviewer — [json](001-feat-backend-killer-task-02-dev-test-reviewer-review.json) — passed; 1 minor
+  (untested error-propagation branch in the helper) intentionally not addressed — `cmd/` has no wiring
+  tests for any workload; reviewer recommended not adding a one-off.
+
+## Task 03 — Update README
+
+Added `backend-killer` to the supported-workloads bullet list (CLI-flag form, with the plan-size
+caveat) and a row to the Workload impact table (package-name form `backendkiller`, sorted first,
+impact = Yes). Verified via `grep` and a well-formedness check of the table.
+
+### Reviews
+- dev-code-reviewer — [json](001-feat-backend-killer-task-03-dev-code-reviewer-review.json) — approved, 0 findings.
