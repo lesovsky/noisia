@@ -26,11 +26,16 @@ package slotbloat
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lesovsky/noisia"
+	"github.com/lesovsky/noisia/db"
 	"github.com/lesovsky/noisia/log"
+	"golang.org/x/time/rate"
 )
 
 // Config defines configuration settings for slot-bloat workload.
@@ -91,16 +96,227 @@ func NewWorkload(config Config, logger log.Logger) (noisia.Workload, error) {
 	return &workload{config, logger}, nil
 }
 
-// Run drives the slot-bloat workload.
-//
-// TODO(task-02): implement the full mechanics — single db.Connect connection,
-// physical slot creation (immediately_reserve), seed-table prepare(), the
-// rate-limited UPDATE-churn loop with the payload-bytes counter, the reporter
-// goroutine, init-error/climax/ctx.Done handling, and best-effort cleanup on a
-// separate context.Background() honouring KeepSlot. This task lays the package
-// foundation only; there is no DB interaction yet.
+// Run opens a single dedicated connection, creates the WAL-pinning replication
+// slot and seed table, then drives the UPDATE-churn loop while reporting progress
+// on a separate ticker goroutine. Cleanup of the slot and table runs in a defer on
+// a fresh context.Background() (ctx is already cancelled at exit).
 func (w *workload) Run(ctx context.Context) error {
-	return fmt.Errorf("not implemented")
+	conn, err := db.Connect(ctx, w.config.Conninfo)
+	if err != nil {
+		// Never echo the raw error: it may carry DSN fragments (e.g. password=…).
+		return fmt.Errorf("connect to target failed: %s", sanitize(err))
+	}
+
+	defer func() { _ = conn.Close() }()
+
+	// Attribute the offending backend in pg_stat_activity. db.Connect (unlike the
+	// pool path) does not set application_name, so set it locally here.
+	_, _, err = conn.Exec(ctx, "SET application_name = 'noisia'")
+	if err != nil {
+		return fmt.Errorf("set application_name failed: %s", sanitize(err))
+	}
+
+	// Build the per-run object names once. The suffix is restricted to [a-z0-9],
+	// which alone makes the identifier injection-safe; double-quoting is
+	// belt-and-suspenders. The table identifier (which cannot be a bind parameter)
+	// is reused verbatim in CREATE/UPDATE/DROP; the slot name is passed as a bind
+	// arg to the slot functions.
+	base := "noisia_slotbloat_" + randomSuffix(8)
+	slotName := base
+	tableIdent := "\"" + base + "\""
+
+	// Cleanup is registered right after a successful connect so the slot/table are
+	// dropped even if seeding fails. It runs on a fresh context.Background() because
+	// ctx is already cancelled at exit and a drop on a cancelled ctx would fail.
+	defer w.cleanup(conn, slotName, tableIdent)
+
+	// Create the un-consumed physical slot with immediately_reserve := true, which
+	// freezes restart_lsn at creation and pins WAL without any consumer.
+	_, _, err = conn.Exec(ctx, "SELECT pg_create_physical_replication_slot($1, true)", slotName)
+	if err != nil {
+		// A clean ctx stop must not be reported as a failure.
+		if ctx.Err() != nil {
+			return nil
+		}
+		// No rows churned yet: this is a setup defect (most often a missing
+		// REPLICATION privilege), not a successful disk-full event.
+		return fmt.Errorf("create replication slot failed (the connecting role needs the REPLICATION privilege): %s", sanitize(err))
+	}
+
+	// Seed the fixed row set churned in place.
+	err = prepare(ctx, conn, tableIdent, w.config.Rows, w.config.PayloadBytes)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return fmt.Errorf("seed table failed: %s", sanitize(err))
+	}
+
+	// counter holds the number of payload bytes successfully written by UPDATEs
+	// (successful UPDATEs × K). It is read by the report ticker goroutine, which
+	// must never touch the (not concurrency-safe) Conn.
+	var counter atomic.Int64
+
+	start := time.Now()
+	tickerDone := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		w.runReporter(ctx, tickerDone, start, &counter)
+	}()
+
+	updateSQL := fmt.Sprintf("UPDATE %s SET payload = $1 WHERE id = $2", tableIdent)
+	err = runChurn(ctx, conn, w.logger, w.config, updateSQL, &counter)
+
+	close(tickerDone)
+	wg.Wait()
+
+	return err
+}
+
+// runReporter prints the escalation panel every ReportInterval, reading only the
+// atomic payload-bytes counter. It never queries the Conn.
+func (w *workload) runReporter(ctx context.Context, done <-chan struct{}, start time.Time, counter *atomic.Int64) {
+	ticker := time.NewTicker(w.config.ReportInterval)
+	defer ticker.Stop()
+
+	var prev int64
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-ticker.C:
+			cur := counter.Load()
+			elapsed := time.Since(start)
+			rate := int64(float64(cur-prev) / w.config.ReportInterval.Seconds())
+			prev = cur
+
+			w.logger.Infof("slot-bloat: payload-written=%s rate=%s/s elapsed=%s", formatBytes(cur), formatBytes(rate), elapsed.Truncate(time.Second))
+		}
+	}
+}
+
+// prepare creates the seed table and inserts N rows of K-byte payload in a single
+// transaction. The heap is deliberately fixed: the churn loop UPDATEs these rows in
+// place, so disk-full is unambiguously attributable to pinned WAL, not table growth.
+func prepare(ctx context.Context, conn db.Conn, tableIdent string, rows, payloadBytes int) error {
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	_, _, err = tx.Exec(ctx, fmt.Sprintf("CREATE TABLE %s (id int PRIMARY KEY, payload bytea)", tableIdent))
+	if err != nil {
+		return err
+	}
+
+	payload := make([]byte, payloadBytes)
+	insertSQL := fmt.Sprintf("INSERT INTO %s (id, payload) VALUES ($1, $2)", tableIdent)
+	for id := 1; id <= rows; id++ {
+		_, _, err = tx.Exec(ctx, insertSQL, id, payload)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
+// runChurn is the single-threaded rate-limited UPDATE loop. It owns the Conn: it
+// issues each UPDATE over the fixed row set (cycling id over 1..N) and adds K to
+// counter for every successful UPDATE.
+//
+// Returns nil on a clean ctx stop. On a connection loss after at least one
+// successful UPDATE (counter>0) while the context is still live, it logs the climax
+// line and returns nil. The first Exec error (counter==0) is returned as an init
+// error, so a broken setup cannot masquerade as a successful disk-full event.
+func runChurn(ctx context.Context, conn db.Conn, logger log.Logger, config Config, updateSQL string, counter *atomic.Int64) error {
+	lim := rate.Limit(config.Rate)
+	if config.Rate == 0 {
+		lim = rate.Inf
+	}
+	limiter := rate.NewLimiter(lim, 1)
+
+	payload := make([]byte, config.PayloadBytes)
+	var id int
+
+	for {
+		if limiter.Allow() {
+			// Cycle id over 1..N.
+			id++
+			if id > config.Rows {
+				id = 1
+			}
+
+			_, _, err := conn.Exec(ctx, updateSQL, payload, id)
+			if err != nil {
+				// A clean ctx stop must not be reported as a failure.
+				if ctx.Err() != nil {
+					return nil
+				}
+
+				if counter.Load() > 0 {
+					logger.Infof("slot-bloat: connection lost — target likely disk-full/restarted")
+					return nil
+				}
+
+				// First Exec failed with no prior success: this is a setup defect,
+				// not a successful disk-full event.
+				return fmt.Errorf("churn update failed: %s", sanitize(err))
+			}
+
+			counter.Add(int64(config.PayloadBytes))
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+	}
+}
+
+// cleanup drops the slot and table on a fresh context.Background() (ctx is already
+// cancelled at exit). By default both are dropped and "slot dropped" is logged only
+// on a fully successful drop; any failure is logged via Warnf with the object names
+// so nothing is silently orphaned. With KeepSlot both are kept and their names are
+// logged. Every error passes through sanitize.
+func (w *workload) cleanup(conn db.Conn, slotName, tableIdent string) {
+	if w.config.KeepSlot {
+		w.logger.Infof("slot-bloat: slot kept: %s, table kept: %s — drop manually", slotName, tableIdent)
+		return
+	}
+
+	ctx := context.Background()
+
+	_, _, terr := conn.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tableIdent))
+	_, _, serr := conn.Exec(ctx, "SELECT pg_drop_replication_slot($1)", slotName)
+	if terr != nil || serr != nil {
+		err := terr
+		if err == nil {
+			err = serr
+		}
+		w.logger.Warnf("slot-bloat: cleanup failed for slot %s, table %s: %s — drop manually", slotName, tableIdent, sanitize(err))
+		return
+	}
+
+	w.logger.Infof("slot-bloat: slot dropped")
+}
+
+// randomSuffix returns a random string of length n drawn from [a-z0-9]. The charset
+// guarantees an injection-safe SQL identifier, and a per-run suffix keeps reruns
+// from colliding on the persistent slot/table names.
+func randomSuffix(n int) string {
+	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = charset[rand.Intn(len(charset))]
+	}
+	return string(b)
 }
 
 // sanitize returns an error message stripped of any conninfo fragment that could

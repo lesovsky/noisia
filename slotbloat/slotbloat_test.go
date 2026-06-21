@@ -5,10 +5,17 @@
 package slotbloat
 
 import (
+	"context"
 	"fmt"
+	"net/url"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/lesovsky/noisia/db"
+	"github.com/lesovsky/noisia/log"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -52,7 +59,11 @@ func Test_sanitize(t *testing.T) {
 		{name: "database token", err: fmt.Errorf("dial error database=SENTINEL_SECRET"), suppressed: true},
 		{name: "sslmode token", err: fmt.Errorf("tls error sslmode=SENTINEL_SECRET"), suppressed: true},
 		{name: "url form", err: fmt.Errorf("failed: postgres://user:SENTINEL_SECRET@db/noisia"), suppressed: true},
+		// prepare()/cleanup error paths: a wrapped DSN fragment must still collapse.
+		{name: "prepare seed error", err: fmt.Errorf("seed table failed: dial tcp host=SENTINEL_SECRET refused"), suppressed: true},
+		{name: "cleanup drop error", err: fmt.Errorf("DROP TABLE failed: password=SENTINEL_SECRET timeout"), suppressed: true},
 		{name: "benign", err: fmt.Errorf("server closed the connection unexpectedly"), suppressed: false, want: "server closed the connection unexpectedly"},
+		{name: "benign prepare", err: fmt.Errorf("permission denied for schema public"), suppressed: false, want: "permission denied for schema public"},
 		{name: "nil", err: nil, suppressed: false, want: ""},
 	}
 
@@ -86,4 +97,406 @@ func Test_formatBytes(t *testing.T) {
 	for _, tc := range testcases {
 		assert.Equal(t, tc.want, formatBytes(tc.n))
 	}
+}
+
+// fakeConn is a minimal db.Conn used to exercise the runChurn init-error / climax /
+// ctx.Done branches without a real database. Only Exec is invoked.
+type fakeConn struct {
+	execErr      error // returned once execOKBefore successful Execs have happened
+	execOKBefore int   // number of successful Execs before execErr is returned
+	calls        int
+}
+
+func (f *fakeConn) Begin(ctx context.Context) (db.Tx, error) { panic("not implemented") }
+func (f *fakeConn) Exec(ctx context.Context, sql string, args ...interface{}) (int64, string, error) {
+	f.calls++
+	if f.calls > f.execOKBefore {
+		return 0, "", f.execErr
+	}
+	return 0, "UPDATE", nil
+}
+func (f *fakeConn) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	panic("not implemented")
+}
+func (f *fakeConn) Close() error { return nil }
+
+func Test_runChurn_firstSlotError(t *testing.T) {
+	// The first Exec error (counter==0) is a setup defect (e.g. missing REPLICATION)
+	// and is returned as an init error, never masquerading as a climax.
+	conn := &fakeConn{execErr: fmt.Errorf("permission denied"), execOKBefore: 0}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var counter atomic.Int64
+	config := Config{Conninfo: "x", Rate: 0, Rows: 5, PayloadBytes: 8, ReportInterval: time.Second}
+
+	err := runChurn(ctx, conn, log.NewDefaultLogger("error"), config, "UPDATE t SET payload=$1 WHERE id=$2", &counter)
+	assert.Error(t, err)
+	assert.Equal(t, int64(0), counter.Load())
+}
+
+func Test_runChurn_climaxAfterSuccess(t *testing.T) {
+	// An Exec error under a live ctx with counter>0 is the climax — runChurn logs
+	// the climax line and returns nil.
+	conn := &fakeConn{execErr: fmt.Errorf("connection reset by peer"), execOKBefore: 3}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var counter atomic.Int64
+	config := Config{Conninfo: "x", Rate: 0, Rows: 5, PayloadBytes: 8, ReportInterval: time.Second}
+
+	err := runChurn(ctx, conn, log.NewDefaultLogger("error"), config, "UPDATE t SET payload=$1 WHERE id=$2", &counter)
+	assert.NoError(t, err)
+	// 3 successful UPDATEs × 8 bytes.
+	assert.Equal(t, int64(24), counter.Load())
+}
+
+func Test_runChurn_ctxDoneClean(t *testing.T) {
+	// A cancelled ctx (mirroring create/seed cancellation surfacing in the loop)
+	// must yield a clean return nil — the error is not masked into a failure.
+	conn := &fakeConn{execErr: fmt.Errorf("context canceled"), execOKBefore: 0}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var counter atomic.Int64
+	config := Config{Conninfo: "x", Rate: 0, Rows: 5, PayloadBytes: 8, ReportInterval: time.Second}
+
+	err := runChurn(ctx, conn, log.NewDefaultLogger("error"), config, "UPDATE t SET payload=$1 WHERE id=$2", &counter)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(0), counter.Load())
+}
+
+// discoverSlotBloatTable returns the single noisia_slotbloat_% table name present in
+// the target DB, or "" if none. Used by integration tests since the suffix is random.
+func discoverSlotBloatTable(t *testing.T, conn db.Conn) string {
+	t.Helper()
+	rows, err := conn.Query(context.Background(),
+		"SELECT tablename FROM pg_tables WHERE tablename LIKE 'noisia_slotbloat_%'")
+	assert.NoError(t, err)
+	defer rows.Close()
+	var name string
+	for rows.Next() {
+		assert.NoError(t, rows.Scan(&name))
+	}
+	assert.NoError(t, rows.Err())
+	return name
+}
+
+func TestWorkload_Run_slotCreated(t *testing.T) {
+	// Slot is created with immediately_reserve: restart_lsn is non-null right after
+	// creation and slot_type is physical. Observed mid-run via a separate connection.
+	config := Config{
+		Conninfo:       db.TestConninfo,
+		Rate:           50,
+		Rows:           10,
+		PayloadBytes:   64,
+		ReportInterval: 200 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	w, err := NewWorkload(config, log.NewDefaultLogger("error"))
+	assert.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+
+	// Give Run time to create the slot and seed the table.
+	time.Sleep(700 * time.Millisecond)
+
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	rows, err := obs.Query(context.Background(),
+		"SELECT slot_type, restart_lsn IS NOT NULL FROM pg_replication_slots WHERE slot_name LIKE 'noisia_slotbloat_%'")
+	assert.NoError(t, err)
+	var slotType string
+	var restartLSNSet bool
+	found := false
+	for rows.Next() {
+		found = true
+		assert.NoError(t, rows.Scan(&slotType, &restartLSNSet))
+	}
+	rows.Close()
+	_ = obs.Close()
+
+	assert.True(t, found, "slot must exist mid-run")
+	assert.Equal(t, "physical", slotType)
+	assert.True(t, restartLSNSet, "restart_lsn must be non-null with immediately_reserve")
+
+	cancel()
+	assert.NoError(t, <-done)
+}
+
+func TestWorkload_Run_seedRowCount(t *testing.T) {
+	// After prepare() the seed table holds exactly N rows.
+	const rows = 7
+	conn, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+
+	tableIdent := "\"noisia_slotbloat_seedtest\""
+	defer func() { _, _, _ = conn.Exec(context.Background(), "DROP TABLE IF EXISTS "+tableIdent) }()
+
+	err = prepare(context.Background(), conn, tableIdent, rows, 32)
+	assert.NoError(t, err)
+
+	cnt := countRows(t, conn, tableIdent)
+	assert.Equal(t, rows, cnt)
+}
+
+func TestWorkload_Run_flatHeap(t *testing.T) {
+	// The payload counter grows during churn while the heap stays flat: count(*)
+	// remains == N across the run.
+	const rows = 8
+	config := Config{
+		Conninfo:       db.TestConninfo,
+		Rate:           100,
+		Rows:           rows,
+		PayloadBytes:   128,
+		ReportInterval: 100 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+
+	w, err := NewWorkload(config, log.NewDefaultLogger("error"))
+	assert.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
+
+	// Wait until the table appears, then assert flat heap mid-run.
+	var table string
+	for i := 0; i < 50; i++ {
+		table = discoverSlotBloatTable(t, obs)
+		if table != "" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	assert.NotEmpty(t, table, "seed table must appear")
+
+	tableIdent := "\"" + table + "\""
+	assert.Equal(t, rows, countRows(t, obs, tableIdent))
+
+	// Let churn run, then re-check the row count is still N (flat heap).
+	time.Sleep(400 * time.Millisecond)
+	assert.Equal(t, rows, countRows(t, obs, tableIdent))
+
+	cancel()
+	assert.NoError(t, <-done)
+}
+
+func TestWorkload_Run_cleanupDropsByDefault(t *testing.T) {
+	// Graceful exit drops both the slot and the table by default.
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
+	purgeSlotBloat(t, obs) // start from a clean slate, independent of test order
+
+	config := Config{
+		Conninfo:       db.TestConninfo,
+		Rate:           50,
+		Rows:           5,
+		PayloadBytes:   64,
+		ReportInterval: 200 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	defer cancel()
+
+	w, err := NewWorkload(config, log.NewDefaultLogger("error"))
+	assert.NoError(t, err)
+	assert.NoError(t, w.Run(ctx))
+
+	assert.Equal(t, 0, countSlots(t, obs), "slot must be dropped")
+	assert.Empty(t, discoverSlotBloatTable(t, obs), "table must be dropped")
+}
+
+func TestWorkload_Run_keepSlot(t *testing.T) {
+	// With KeepSlot the slot and table survive graceful exit.
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
+	purgeSlotBloat(t, obs) // start from a clean slate, independent of test order
+
+	config := Config{
+		Conninfo:       db.TestConninfo,
+		Rate:           50,
+		Rows:           5,
+		PayloadBytes:   64,
+		ReportInterval: 200 * time.Millisecond,
+		KeepSlot:       true,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	defer cancel()
+
+	w, err := NewWorkload(config, log.NewDefaultLogger("error"))
+	assert.NoError(t, err)
+	assert.NoError(t, w.Run(ctx))
+
+	table := discoverSlotBloatTable(t, obs)
+	assert.NotEmpty(t, table, "table must be kept")
+	assert.Equal(t, 1, countSlots(t, obs), "slot must be kept")
+
+	// Manual cleanup so the kept objects don't leak into other tests.
+	purgeSlotBloat(t, obs)
+}
+
+func TestWorkload_Run_applicationName(t *testing.T) {
+	// The dedicated connection reports application_name=noisia mid-run.
+	config := Config{
+		Conninfo:       db.TestConninfo,
+		Rate:           50,
+		Rows:           5,
+		PayloadBytes:   64,
+		ReportInterval: 200 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	w, err := NewWorkload(config, log.NewDefaultLogger("error"))
+	assert.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+
+	time.Sleep(500 * time.Millisecond)
+
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	rows, err := obs.Query(context.Background(),
+		"SELECT count(*) FROM pg_stat_activity WHERE application_name = 'noisia'")
+	assert.NoError(t, err)
+	var n int
+	for rows.Next() {
+		assert.NoError(t, rows.Scan(&n))
+	}
+	rows.Close()
+	_ = obs.Close()
+	assert.GreaterOrEqual(t, n, 1, "the workload connection must report application_name=noisia")
+
+	cancel()
+	assert.NoError(t, <-done)
+}
+
+func TestWorkload_Run_initErrorNoReplication(t *testing.T) {
+	// A role without REPLICATION cannot create the slot: Run returns an init error
+	// mentioning the privilege, and the Conninfo (with a sentinel) never leaks.
+	admin, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	defer func() { _ = admin.Close() }()
+
+	_, _, _ = admin.Exec(context.Background(), "DROP ROLE IF EXISTS noisia_norepl")
+	_, _, err = admin.Exec(context.Background(),
+		"CREATE ROLE noisia_norepl LOGIN PASSWORD 'SENTINEL_SECRET' NOREPLICATION")
+	assert.NoError(t, err)
+	// Needs CREATE on public for the (never-reached) seed step; grant it so the only
+	// failure is the missing REPLICATION privilege.
+	_, _, _ = admin.Exec(context.Background(), "GRANT CREATE ON SCHEMA public TO noisia_norepl")
+	defer func() { _, _, _ = admin.Exec(context.Background(), "DROP ROLE IF EXISTS noisia_norepl") }()
+
+	// Build the role's conninfo from the test DSN, swapping in user/password.
+	conninfo := swapUserPassword(t, db.TestConninfo, "noisia_norepl", "SENTINEL_SECRET")
+
+	config := Config{
+		Conninfo:       conninfo,
+		Rate:           50,
+		Rows:           5,
+		PayloadBytes:   64,
+		ReportInterval: 200 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	w, err := NewWorkload(config, log.NewDefaultLogger("error"))
+	assert.NoError(t, err)
+	err = w.Run(ctx)
+	assert.Error(t, err)
+	assert.Contains(t, strings.ToUpper(err.Error()), "REPLICATION")
+	assert.NotContains(t, err.Error(), "SENTINEL_SECRET")
+}
+
+// countRows returns count(*) for the given table identifier.
+func countRows(t *testing.T, conn db.Conn, tableIdent string) int {
+	t.Helper()
+	rows, err := conn.Query(context.Background(), "SELECT count(*) FROM "+tableIdent)
+	assert.NoError(t, err)
+	defer rows.Close()
+	var n int
+	for rows.Next() {
+		assert.NoError(t, rows.Scan(&n))
+	}
+	assert.NoError(t, rows.Err())
+	return n
+}
+
+// countSlots returns the number of noisia_slotbloat_% replication slots.
+func countSlots(t *testing.T, conn db.Conn) int {
+	t.Helper()
+	rows, err := conn.Query(context.Background(),
+		"SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE 'noisia_slotbloat_%'")
+	assert.NoError(t, err)
+	defer rows.Close()
+	var n int
+	for rows.Next() {
+		assert.NoError(t, rows.Scan(&n))
+	}
+	assert.NoError(t, rows.Err())
+	return n
+}
+
+// purgeSlotBloat removes any leftover noisia_slotbloat_% slots and tables, so a
+// cleanup-sensitive test starts from a clean slate regardless of test order.
+func purgeSlotBloat(t *testing.T, conn db.Conn) {
+	t.Helper()
+
+	slotRows, err := conn.Query(context.Background(),
+		"SELECT slot_name FROM pg_replication_slots WHERE slot_name LIKE 'noisia_slotbloat_%'")
+	assert.NoError(t, err)
+	var slots []string
+	for slotRows.Next() {
+		var name string
+		assert.NoError(t, slotRows.Scan(&name))
+		slots = append(slots, name)
+	}
+	slotRows.Close()
+	for _, name := range slots {
+		_, _, _ = conn.Exec(context.Background(), "SELECT pg_drop_replication_slot($1)", name)
+	}
+
+	tableRows, err := conn.Query(context.Background(),
+		"SELECT tablename FROM pg_tables WHERE tablename LIKE 'noisia_slotbloat_%'")
+	assert.NoError(t, err)
+	var tables []string
+	for tableRows.Next() {
+		var name string
+		assert.NoError(t, tableRows.Scan(&name))
+		tables = append(tables, name)
+	}
+	tableRows.Close()
+	for _, name := range tables {
+		_, _, _ = conn.Exec(context.Background(), "DROP TABLE IF EXISTS \""+name+"\"")
+	}
+}
+
+// swapUserPassword rewrites a URL-form DSN (as produced by testcontainers), replacing
+// the userinfo so a test can reconnect to the same host/port/db as a different role.
+func swapUserPassword(t *testing.T, dsn, user, password string) string {
+	t.Helper()
+	u, err := url.Parse(dsn)
+	assert.NoError(t, err)
+	u.User = url.UserPassword(user, password)
+	return u.String()
 }
