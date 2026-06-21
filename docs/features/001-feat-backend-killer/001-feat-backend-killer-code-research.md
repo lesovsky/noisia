@@ -291,3 +291,386 @@ timeouts (e.g. 2s) depend on this. New package's tests must keep short, determin
 - `cmd/app.go` — import (line 3-16), `config` struct (line 18-47), launch block in
   `runApplication` (after line 149), `startBackendKillerWorkload` helper (after line 281).
 - `README.md` — workload bullet (line 7-16) + impact table (line 79-88).
+
+---
+
+## Updated: 2026-06-21 — Tech-spec implementation details
+
+Copy-pasteable, line-accurate facts for writing the tech-spec. All excerpts verified against
+HEAD on 2026-06-21.
+
+### 1. Single-threaded rate-limited loop idiom
+
+There are TWO single-connection / pool templates. The **cleanest single-`db.Conn` template is
+`rollbacks` `startLoop` (`rollbacks/rollbacks.go:111-141`)** — backend-killer should mirror this
+shape (one `db.Conn`, `rate.NewLimiter` + `Allow()` busy-poll, `select{ctx.Done()}` stop):
+
+```go
+// rollbacks/rollbacks.go:111-141
+func startLoop(ctx context.Context, conn db.Conn, r float64) (int, int, error) {
+	table, err := createTempTable(ctx, conn)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	var commits, rollbacks int
+
+	limiter := rate.NewLimiter(rate.Limit(r), 1)   // burst = 1
+	for {
+		if limiter.Allow() {
+			q, args := newErrQuery(table)
+			_, _, err = conn.Exec(ctx, q, args...)
+			if err != nil {
+				rollbacks++
+			} else {
+				commits++
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return commits, rollbacks, nil   // clean stop -> nil
+		default:
+		}
+	}
+}
+```
+
+The `tempfiles` variant (`tempfiles/tempfiles.go:127-156`) is the same loop but spawns a goroutine
+per tick (pool, async) — NOT what backend-killer wants. Its one extra-useful idiom is the
+**`ctx.Err()==nil` guard before `Warnf`** to suppress ctx-cancel noise:
+
+```go
+// tempfiles/tempfiles.go:138-146
+go func() {
+	err := execQuery(ctx, pool)
+	if err != nil && ctx.Err() == nil {            // <- guard
+		log.Warnf("executing tempfiles query failed: %v, continue", err)
+	}
+	wg.Done()
+}()
+```
+
+**rate==0 / unlimited handling — NOT supported by existing workloads.** Both rollbacks and
+tempfiles `validate()` REJECT `Rate <= 0` (`rollbacks/rollbacks.go:48-50`,
+`tempfiles/tempfiles.go:44-46`). So there is no in-repo precedent for `0 = unlimited`. The spec
+requires `--backend-killer.rate` default `0` = no limit. Mechanism to implement it (the library
+supports it natively): `rate.NewLimiter` accepts `rate.Inf` (`= Limit(math.MaxFloat64)`,
+`golang.org/x/time@v0.11.0/rate/rate.go:22`), and an `Inf`-limit limiter's `Allow()` always
+returns true (every event permitted). So:
+
+```go
+lim := rate.Limit(r)
+if r <= 0 {
+	lim = rate.Inf
+}
+limiter := rate.NewLimiter(lim, 1)
+```
+
+This keeps the SAME `Allow()`+`select{ctx.Done()}` loop shape for both throttled and unlimited
+cases (no separate busy-loop branch), satisfying the spec edge case "rate=0 не должен
+патологически крутить busy-loop — используется та же идиома цикла". `rate.Limit` is
+`type Limit float64` (`rate.go:19`); `NewLimiter(r Limit, b int) *Limiter` (`rate.go:100`);
+`Allow()` (`rate.go:109`). No workload uses `Wait(ctx)`.
+
+**Per-tick error handling:** mid-run query errors → `Warnf(...continue)` and loop continues
+(rollbacks even expects every query to fail). The `ctx.Err()==nil` guard (tempfiles) distinguishes
+"real error" from "ctx cancelled". For backend-killer, a post-success `Exec` error while
+`ctx.Err()==nil` IS the climax (backend died) → print culmination line, return nil.
+
+### 2. db package exact signatures
+
+- `func Connect(ctx context.Context, connString string) (Conn, error)` —
+  `db/postgres.go:113-122`. Wraps `pgx.Connect(ctx, connString)`; returns a single real backend
+  session (`*PostgresConn` behind the `Conn` interface). This is what backend-killer uses.
+- `Conn` interface (`db/db.go:24-29`):
+  ```go
+  type Conn interface {
+  	Begin(ctx context.Context) (Tx, error)
+  	Exec(ctx context.Context, sql string, arguments ...interface{}) (int64, string, error)
+  	Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error)
+  	Close() error
+  }
+  ```
+- `Conn.Exec` impl (`db/postgres.go:136-143`): returns `(tag.RowsAffected(), tag.String(), err)` —
+  `(int64, string, error)`. On any pgx error it returns `(0, "", err)`.
+- `Conn.Close() error` (`db/postgres.go:150-152`): `c.conn.Close(context.Background())`.
+
+**Detecting a broken/lost connection from an Exec error (pgx v5):** there is NO helper in this
+codebase and the wrapper discards the typed pgx error structure — it only re-returns `err`. The
+repo's own convention (see Run-loop section above) is exactly: **treat any `Exec` error that occurs
+while `ctx.Err() == nil` as the failure/climax** — i.e. `if err != nil && ctx.Err() == nil`. The
+codebase does not import `errors`/`github.com/jackc/pgx/v5/pgconn` for `PgError`/`IsClosed`
+inspection anywhere in a workload loop. Recommendation for the tech-spec: do NOT try to classify
+pgx error types; follow the established idiom — `ctx.Err()==nil` + non-nil `Exec` err on a
+`PREPARE` ⇒ "connection lost ... likely OOM-restarted". (Note: the spec already prescribes the
+cautious "likely" wording precisely because the client cannot reliably distinguish OOM from other
+disconnects.)
+
+**Existing single-`Conn` usage (the model):** `rollbacks/runWorker` (`rollbacks/rollbacks.go:93-108`):
+```go
+conn, err := db.Connect(ctx, config.Conninfo)   // one dedicated backend
+if err != nil {
+	return err                                   // setup failure -> error
+}
+commits, rollbacks, err := startLoop(ctx, conn, config.Rate)
+```
+`rollbacks/runWorker` does NOT `conn.Close()`. `forkconns/makeConnectionLoop`
+(`forkconns/forkconns.go:95-108`) and `tempfiles/countTempBytes` (`tempfiles/tempfiles.go:181-186`,
+`defer func(){ _ = conn.Close() }()`) DO close. backend-killer should `defer conn.Close()`.
+
+### 3. Full small workload to mirror (rollbacks, minus the loop helpers)
+
+`rollbacks/rollbacks.go:32-90` is the exact Config/validate/struct/NewWorkload/Run skeleton shape
+(value-receiver `validate`, first-failing-rule `fmt.Errorf`, `NewWorkload` validates then returns
+`&workload{config, logger}`):
+
+```go
+// rollbacks/rollbacks.go:32-69
+type Config struct {
+	Conninfo string
+	Jobs     uint16
+	Rate     float64
+}
+
+func (c Config) validate() error {
+	if c.Jobs < 1 {
+		return fmt.Errorf("jobs must be greater than zero")
+	}
+	if c.Rate <= 0 {
+		return fmt.Errorf("rate must be positive")
+	}
+	return nil
+}
+
+type workload struct {
+	config Config
+	logger log.Logger
+}
+
+func NewWorkload(config Config, logger log.Logger) (noisia.Workload, error) {
+	err := config.validate()
+	if err != nil {
+		return nil, err
+	}
+	return &workload{config, logger}, nil
+}
+```
+
+**Defaults/zero-value validation convention:** `validate()` checks lower bounds with
+`fmt.Errorf` (e.g. `Jobs < 1`, `Rate <= 0`, `Interval < 10*time.Millisecond` in
+`terminate/terminate.go:50-58`). For backend-killer note the deliberate DIVERGENCE: `Rate` must
+allow `0` (= unlimited per spec), so do NOT copy the `Rate <= 0` reject; validate `plan-size >= 1`
+and `report-interval > 0` instead. The `workload` struct here has NO `pool`/`conn` field — it's
+built fresh in `Run` (tempfiles adds a `pool db.DB` field, `tempfiles/tempfiles.go:52-56`, and
+passes `nil` in `NewWorkload`; backend-killer can keep the simpler rollbacks shape and open the
+conn inside `Run`).
+
+### 4. CLI wiring — exact edit points (rollbacks as the template)
+
+**`cmd/main.go` flag declarations** (inside `main()`'s `var(...)` block, ends at line 49) —
+rollbacks lines `cmd/main.go:28-29`:
+```go
+rollbacks     = kingpin.Flag("rollbacks", "Run rollbacks workload").Default("false").Envar("NOISIA_ROLLBACKS").Bool()
+rollbacksRate = kingpin.Flag("rollbacks.rate", "Rollbacks rate per second (per worker)").Default("1").Envar("NOISIA_ROLLBACKS_RATE").Float64()
+```
+Add the 5 backend-killer flags here (after line 48, before `)` on line 49):
+- `--backend-killer` `.Default("false").Envar("NOISIA_BACKEND_KILLER").Bool()`
+- `--backend-killer.rate` `.Default("0").Envar("NOISIA_BACKEND_KILLER_RATE").Float64()`
+- `--backend-killer.plan-size` `.Default("<const>").Envar("NOISIA_BACKEND_KILLER_PLAN_SIZE").Int()`
+- `--backend-killer.show-memory` `.Default("false").Envar("NOISIA_BACKEND_KILLER_SHOW_MEMORY").Bool()`
+- `--backend-killer.report-interval` `.Default("1s").Envar("NOISIA_BACKEND_KILLER_REPORT_INTERVAL").Duration()`
+
+Builder terminators available in this codebase: `.Bool()`, `.Float64()`, `.Uint16()`,
+`.Duration()`, `.String()`, `.Enum(...)`. **`.Int()` is NOT currently used** in main.go (only
+`Uint16` for integer flags) — kingpin/v2 does provide `.Int()`; if you prefer to stay within
+already-used types use `.Int()` (valid in kingpin/v2 v2.4.0) for `plan-size`, or `Uint16()` if a
+65535 cap is acceptable. (Recommend `.Int()` for plan-size headroom.)
+
+**`cmd/main.go` config{} literal** — rollbacks entries `cmd/main.go:67-68`:
+```go
+rollbacks:             *rollbacks,
+rollbacksRate:         *rollbacksRate,
+```
+Add `backendKiller: *backendKiller,` + the 4 tuning derefs in the `config{...}` literal
+(`cmd/main.go:59-88`, closes at line 88).
+
+**`cmd/app.go` config struct fields** — rollbacks fields `cmd/app.go:26-27`:
+```go
+rollbacks             bool
+rollbacksRate         float64
+```
+Add the 5 fields to `type config struct` (`cmd/app.go:18-47`, closes at line 47).
+
+**`cmd/app.go` launch if-block in `runApplication`** — rollbacks block `cmd/app.go:67-77`:
+```go
+if c.rollbacks {
+	log.Infof("start rollbacks workload for %s", c.duration)
+	wg.Add(1)
+	go func() {
+		err := startRollbacksWorkload(ctx, c, log)
+		if err != nil {
+			log.Errorf("rollbacks workload failed: %s", err)
+		}
+		wg.Done()
+	}()
+}
+```
+Add an analogous `if c.backendKiller { ... go startBackendKillerWorkload(...) ... }` block before
+`wg.Wait()` (i.e. after the forkconns block which ends at line 149). `ctx` here is already wrapped
+with `--duration` timeout at `cmd/app.go:50`.
+
+**`cmd/app.go` start helper** — rollbacks helper `cmd/app.go:173-186`:
+```go
+func startRollbacksWorkload(ctx context.Context, c config, logger log.Logger) error {
+	workload, err := rollbacks.NewWorkload(
+		rollbacks.Config{
+			Conninfo: c.postgresConninfo,
+			Jobs:     c.jobs,
+			Rate:     c.rollbacksRate,
+		}, logger,
+	)
+	if err != nil {
+		return err
+	}
+	return workload.Run(ctx)
+}
+```
+Add `startBackendKillerWorkload` after the last helper (`startForkconnsWorkload` ends at line 281).
+**Add the import** `"github.com/lesovsky/noisia/backendkiller"` to the import block
+(`cmd/app.go:3-16`) — alphabetical position is between `failconns` (line 6) and `forkconns` (line 7).
+Do NOT add `Jobs: c.jobs` to the backend-killer Config (single-threaded).
+
+So: 6 distinct edit sites total (5 from prior research + the import line).
+
+### 5. Duration-typed flags in kingpin/v2
+
+Declared with the `.Duration()` terminator and a Go-duration string `.Default(...)`. Examples in
+`cmd/main.go`:
+- `duration = kingpin.Flag("duration", "Duration of tests").Default("10s").Envar("NOISIA_DURATION").Duration()` (`cmd/main.go:24`)
+- `terminateInterval = kingpin.Flag("terminate.interval", "...").Default("1s").Envar("NOISIA_TERMINATE_INTERVAL").Duration()` (`cmd/main.go:39`)
+- idlexacts naptime min/max `cmd/main.go:26-27` (`.Default("5s")`, `.Default("20s")`).
+
+So `--backend-killer.report-interval` mirrors line 39 exactly:
+```go
+backendKillerReportInterval = kingpin.Flag("backend-killer.report-interval", "Escalation panel print interval").Default("1s").Envar("NOISIA_BACKEND_KILLER_REPORT_INTERVAL").Duration()
+```
+The config field type is `time.Duration` (see `terminateInterval time.Duration`, `cmd/app.go:36`).
+
+### 6. Test patterns — exact
+
+**`main_test.go` (one line of body)** — `rollbacks/main_test.go:1-10`:
+```go
+package rollbacks
+
+import (
+	"os"
+	"testing"
+
+	"github.com/lesovsky/noisia/internal/dbtest"
+)
+
+func TestMain(m *testing.M) { os.Exit(dbtest.RunMain(m)) }
+```
+(backend-killer: same, `package backendkiller`.)
+
+**`TestConfig_validate` table test** — `rollbacks/rollbacks_test.go:12-29`:
+```go
+func TestConfig_validate(t *testing.T) {
+	testcases := []struct {
+		valid  bool
+		config Config
+	}{
+		{valid: true, config: Config{Jobs: 1, Rate: 1}},
+		{valid: false, config: Config{Jobs: 0, Rate: 1}},
+		{valid: false, config: Config{Jobs: 1, Rate: 0}},
+	}
+
+	for _, tc := range testcases {
+		if tc.valid {
+			assert.NoError(t, tc.config.validate())
+		} else {
+			assert.Error(t, tc.config.validate())
+		}
+	}
+}
+```
+NOTE for backend-killer: `Rate: 0` must be a VALID case (unlimited), unlike rollbacks. Cover
+`plan-size < 1` and `report-interval <= 0` as the invalid cases instead.
+
+**`TestWorkload_Run` integration** — `rollbacks/rollbacks_test.go:51-61`:
+```go
+func TestWorkload_Run(t *testing.T) {
+	config := Config{Conninfo: db.TestConninfo, Jobs: 2, Rate: 2}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	w, err := NewWorkload(config, log.NewDefaultLogger("info"))
+	assert.NoError(t, err)
+	err = w.Run(ctx)
+	assert.Nil(t, err)
+}
+```
+Imports used by the test file (`rollbacks/rollbacks_test.go:3-10`): `context`, `db`, `log`,
+`github.com/stretchr/testify/assert`, `testing`, `time`. `db.TestConninfo` is the testcontainer DSN
+(`db/testing.go:10`, populated by `dbtest.RunMain`). Pattern uses `context.WithTimeout` ~1s
+(serialized by `-p 1`).
+
+**Asserting an observable effect** — `rollbacks/rollbacks_test.go:70-81` (`Test_startLoop`) asserts
+the loop's RETURN counters (`assert.Equal(t, 0, c)`, `assert.Positive(t, r)`), and
+`Test_createTempTable` (lines 83-92) asserts the side-effect via a returned value. For
+backend-killer the spec wants **monotonic growth of the in-process prepared-stmt counter over N
+iterations** — mirror `Test_startLoop`: expose the loop helper so it returns the final counter (or
+take two snapshots), open a `db.Connect(context.Background(), db.TestConninfo)` conn directly, run a
+~1s `WithTimeout` ctx, and `assert.Positive` on the count. Do NOT drive a real OOM.
+
+`Makefile:27-33` runs `go test -race -timeout 300s -p 1 ./...` — keep timings short/deterministic.
+
+### 7. "Heavy plan" construction — feasibility + simplest form
+
+No query-building helpers exist for this (rollbacks builds literal SQL inline with `fmt.Sprintf`,
+`rollbacks/rollbacks.go:157-236`; forkconns/tempfiles use constant SQL strings). This is the one
+genuinely new piece — build it inline with `strings.Builder` / `fmt`.
+
+Feasibility: confirmed. A server-side `PREPARE <unique_name> AS SELECT <N expressions>` is a plain
+`conn.Exec(ctx, sql)` (literal, NOT parameterized — the statement name and the target-list width
+must be in the SQL text). Each `PREPARE` adds a cached plan to the backend's `CacheMemoryContext`;
+never `DEALLOCATE` ⇒ plan cache (and backend RSS) grows monotonically. The `plan-size` int scales
+the number of target-list expressions, so each cached plan is heavier.
+
+Simplest construction (unique name from a monotonic counter `i`, width from `plan-size = n`):
+```go
+// pseudo: build "PREPARE noisia_bk_<i> AS SELECT 1 AS c0, 1 AS c1, ... , 1 AS c<n-1>"
+var b strings.Builder
+fmt.Fprintf(&b, "PREPARE noisia_bk_%d AS SELECT ", i)
+for j := 0; j < n; j++ {
+	if j > 0 {
+		b.WriteString(", ")
+	}
+	fmt.Fprintf(&b, "%d AS c%d", j, j)   // constant exprs; no FROM, no table needed
+}
+conn.Exec(ctx, b.String())
+```
+Notes:
+- Use literal SQL (no `$1` args): `PREPARE` itself defines parameters, so passing pgx args here is
+  wrong. Keep it a pure DDL-style `Exec` with no args (like `createTempTable`,
+  `rollbacks/rollbacks.go:148`).
+- A trivial constant target-list (`SELECT 1 AS c0, ...`) needs no table — matches the spec's
+  "no pre-seeding / self-generated load". Distinct prepared-statement NAMES (from the monotonic
+  counter) guarantee uniqueness across millions of statements; the SELECT body can be identical.
+- `--show-memory` reads OWN backend via
+  `SELECT sum(used_bytes) FROM pg_backend_memory_contexts` (PG 14+) using
+  `conn.Query`/`rows.Scan` (pattern: `tempfiles/countTempBytes`, `tempfiles/tempfiles.go:188-198`).
+  On PG < 14 this errors (relation missing) → degrade softly (skip the mem field, `Warnf` once).
+  A memory-read error is per-tick recoverable and must NOT trigger the "likely OOM-restarted"
+  culmination — only a `PREPARE` Exec failure does.
+
+### README rows to add (exact tables)
+
+- Bullet list `README.md:7-16`: add e.g.
+  `- `backend-killer` - one session leaks prepared statements (plan-cache growth) until the backend
+  OOMs and the instance restarts.`
+- Impact table `README.md:79-88` (alphabetical, rows are `| name | impact |`): add
+  `| backendkiller | **Yes**: a single session can grow backend RSS until OOM-kill and full
+  instance restart |`. (Existing rows use the package name, e.g. `forkconns`, `idlexacts`.)
