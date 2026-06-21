@@ -298,7 +298,7 @@ behavior changes. **Breaking changes:** no.
 
 ### Final Wave
 
-#### Task 4: Pre-deploy QA
+#### Task 4: Pre-deploy QA ✅ done
 - **Description:** Acceptance testing: run `make lint` + full `make test` (serial), and verify the
   acceptance criteria from the user-spec and this tech-spec (flags present, mechanics test green, no
   regressions). No deploy (releases are tag-driven and out of scope for this feature).

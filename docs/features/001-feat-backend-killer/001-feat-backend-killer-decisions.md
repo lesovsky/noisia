@@ -50,3 +50,13 @@ impact = Yes). Verified via `grep` and a well-formedness check of the table.
 
 ### Reviews
 - dev-code-reviewer — [json](001-feat-backend-killer-task-03-dev-code-reviewer-review.json) — approved, 0 findings.
+
+## Task 04 — Pre-deploy QA
+
+Final-wave acceptance testing (no deploy — releases are tag-driven). `make lint` clean (0 issues,
+golangci-lint v2). `make test` green across all packages (serial `-p 1`, testcontainers): backendkiller
+5.5s @ 88.7% coverage, no regressions in the existing 8 workload packages; total coverage 63.7%. Build +
+`noisia --help` confirm all 5 backend-killer flags with defaults. All acceptance criteria from the
+user-spec and tech-spec verified (single dedicated connection, monotonic counter, panel, --show-memory
+PG14+ graceful, error/climax handling, Conninfo never logged, application_name set, README updated).
+No reviewers (QA is self-verifying).
