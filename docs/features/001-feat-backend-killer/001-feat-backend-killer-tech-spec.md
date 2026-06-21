@@ -1,6 +1,6 @@
 ---
 created: 2026-06-21
-status: draft
+status: approved
 branch: 001-feat-backend-killer
 size: M
 ---
