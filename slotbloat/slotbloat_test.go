@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -97,6 +98,71 @@ func Test_formatBytes(t *testing.T) {
 	for _, tc := range testcases {
 		assert.Equal(t, tc.want, formatBytes(tc.n))
 	}
+}
+
+// captureLogger is a log.Logger test double that records every Infof line so a test
+// can assert the escalation-panel shape without touching real logging output.
+type captureLogger struct {
+	mu        sync.Mutex
+	infoLines []string
+}
+
+func (l *captureLogger) Info(msg string) {}
+func (l *captureLogger) Infof(format string, v ...interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.infoLines = append(l.infoLines, fmt.Sprintf(format, v...))
+}
+func (l *captureLogger) Warn(msg string)                        {}
+func (l *captureLogger) Warnf(format string, v ...interface{})  {}
+func (l *captureLogger) Error(msg string)                       {}
+func (l *captureLogger) Errorf(format string, v ...interface{}) {}
+
+func (l *captureLogger) lines() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]string, len(l.infoLines))
+	copy(out, l.infoLines)
+	return out
+}
+
+func Test_runReporter(t *testing.T) {
+	// runReporter prints the escalation panel each ReportInterval, reading only the
+	// atomic counter. Drive it for a couple of ticks against a controlled counter and
+	// assert the panel shape plus the human-readable formatting (formatBytes) and the
+	// counter-delta rate. Deterministic: small interval, stop via the done channel.
+	const interval = 50 * time.Millisecond
+	logger := &captureLogger{}
+	w := &workload{
+		config: Config{ReportInterval: interval},
+		logger: logger,
+	}
+
+	var counter atomic.Int64
+	// 2 MiB written before the first tick: rate = 2 MiB / 0.05s = 40 MiB/s.
+	counter.Store(2 * 1024 * 1024)
+
+	done := make(chan struct{})
+	reporterDone := make(chan struct{})
+	go func() {
+		w.runReporter(context.Background(), done, time.Now(), &counter)
+		close(reporterDone)
+	}()
+
+	// Allow the first tick to fire and be recorded.
+	time.Sleep(interval + 20*time.Millisecond)
+	close(done)
+	<-reporterDone
+
+	lines := logger.lines()
+	assert.GreaterOrEqual(t, len(lines), 1, "at least one panel line must be printed")
+
+	// First panel: payload-written reflects the counter, rate is the delta over the
+	// interval, both human-readable; elapsed is present.
+	first := lines[0]
+	assert.Contains(t, first, "slot-bloat: payload-written=2.0MB", "payload-written must be human-readable from formatBytes")
+	assert.Contains(t, first, "rate=40.0MB/s", "rate must be the counter delta over the interval, human-readable")
+	assert.Contains(t, first, "elapsed=", "panel must report elapsed time")
 }
 
 // fakeConn is a minimal db.Conn used to exercise the runChurn init-error / climax /
@@ -291,8 +357,37 @@ func TestWorkload_Run_flatHeap(t *testing.T) {
 	time.Sleep(400 * time.Millisecond)
 	assert.Equal(t, rows, countRows(t, obs, tableIdent))
 
+	// The churn loop must actually have issued UPDATEs against the seed table —
+	// otherwise a flat heap alone would also pass with zero writes. n_tup_upd is
+	// updated asynchronously, so poll for it (mirroring the table-appears poll above).
+	var upd int64
+	for i := 0; i < 50; i++ {
+		upd = tupUpd(t, obs, table)
+		if upd > 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	assert.Greater(t, upd, int64(0), "the churn loop must have issued UPDATEs against the seed table")
+
 	cancel()
 	assert.NoError(t, <-done)
+}
+
+// tupUpd returns n_tup_upd for the given relation from pg_stat_user_tables. Used to
+// prove the churn loop actually wrote (stats are updated asynchronously).
+func tupUpd(t *testing.T, conn db.Conn, relname string) int64 {
+	t.Helper()
+	rows, err := conn.Query(context.Background(),
+		"SELECT coalesce(n_tup_upd, 0) FROM pg_stat_user_tables WHERE relname = $1", relname)
+	assert.NoError(t, err)
+	defer rows.Close()
+	var n int64
+	for rows.Next() {
+		assert.NoError(t, rows.Scan(&n))
+	}
+	assert.NoError(t, rows.Err())
+	return n
 }
 
 func TestWorkload_Run_cleanupDropsByDefault(t *testing.T) {
