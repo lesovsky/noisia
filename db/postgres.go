@@ -2,8 +2,8 @@ package db
 
 import (
 	"context"
-	"github.com/jackc/pgx/v4"
-	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 /* Database connections pool implementation */
@@ -22,8 +22,15 @@ func NewPostgresDB(ctx context.Context, conninfo string) (DB, error) {
 
 	config.ConnConfig.RuntimeParams["application_name"] = "noisia"
 
-	pool, err := pgxpool.ConnectConfig(ctx, config)
+	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
+		return nil, err
+	}
+
+	// pgx v5 pools are lazy (unlike v4's ConnectConfig), so establish a connection
+	// eagerly to fail fast on an unreachable/invalid database.
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
 		return nil, err
 	}
 

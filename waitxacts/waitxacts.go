@@ -157,9 +157,6 @@ func (w *workload) cleanup() error {
 
 // startLoop start workload loop until context timeout exceeded.
 func startLoop(ctx context.Context, log log.Logger, pool db.DB, tables []string, config Config) error {
-	// Initialize random, used for calculating lock duration.
-	rand.Seed(time.Now().UnixNano())
-
 	// Increment maxTime up to 1 second due to rand.Int63n() never return max value.
 	minTime, maxTime := config.LocktimeMin, config.LocktimeMax+1
 
@@ -249,6 +246,5 @@ func selectRandomTable(tables []string) string {
 		return ""
 	}
 
-	rand.Seed(time.Now().UnixNano())
 	return tables[rand.Intn(len(tables))]
 }

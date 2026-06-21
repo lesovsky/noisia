@@ -22,10 +22,13 @@ dep: ## Get the dependencies
 	go mod download
 
 lint: ## Lint the source files
-	golangci-lint run --timeout 5m -E golint -e '(method|func) [a-zA-Z]+ should be [a-zA-Z]+'
+	golangci-lint run --timeout 5m
 
 test: dep ## Run tests
-	go test -race -timeout 300s -coverprofile=.test_coverage.txt ./... && \
+	# -p 1 serializes package tests: each package spins its own PostgreSQL
+	# testcontainer, and workloads mutate server-wide state, so they must not
+	# run concurrently (also keeps tight per-test timings stable).
+	go test -race -timeout 300s -p 1 -coverprofile=.test_coverage.txt ./... && \
     	go tool cover -func=.test_coverage.txt | tail -n1 | awk '{print "Total test coverage: " $$3}'
 	@rm .test_coverage.txt
 

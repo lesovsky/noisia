@@ -158,7 +158,6 @@ func newErrQuery(table string) (string, []interface{}) {
 	// Total number of available erroneous queries.
 	const total = 15
 
-	rand.Seed(time.Now().UnixNano())
 	idx := rand.Intn(total)
 
 	var (
@@ -222,8 +221,10 @@ func newErrQuery(table string) (string, []interface{}) {
 		q = fmt.Sprintf("SELECT st.entity_id, s.name, s.size_b, s.created_at FROM %s s WHERE entity_id = $1", table)
 		args = []interface{}{num1}
 	case 13:
-		// ERROR:  NUMERIC scale 2 must be between 0 and precision 1 at character ???
-		q = fmt.Sprintf("SELECT entity_id, name, (size_b / 8192)::numeric(1,2) AS size_t, created_at FROM %s WHERE entity_id = $1", table)
+		// ERROR:  NUMERIC precision 1001 must be between 1 and 1000 at character ???
+		// NOTE: precision is invalid at parse time, so this fails regardless of rows
+		// and PostgreSQL version (numeric(1,2) became valid in PG15, see git history).
+		q = fmt.Sprintf("SELECT entity_id, name, (size_b / 8192)::numeric(1001,2) AS size_t, created_at FROM %s WHERE entity_id = $1", table)
 		args = []interface{}{num1}
 	case 14:
 		// ERROR:  COALESCE types date and bigint cannot be matched at character ???
