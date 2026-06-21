@@ -1,0 +1,27 @@
+{
+  "validator": "dev-reality-checker",
+  "feature_base": "docs/features/001-feat-backend-killer/001-feat-backend-killer",
+  "tasks_checked": ["04"],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": "04",
+      "issue": "Task step 3 and Verification Steps suggest `./noisia --help`, but the Makefile `build` target outputs the binary to `bin/noisia` (CGO_ENABLED=0 ... -o bin/${APPNAME} ./cmd), not the repo root. The task already hedges with '(или путь к собранному бинарю)', so this is not blocking.",
+      "fix": "Run `./bin/noisia --help` after `make build`, or use `go run ./cmd --help`."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": "04",
+      "issue": "`make lint` runs `golangci-lint run`. The binary is not on the default PATH; it exists at $(go env GOPATH)/bin/golangci-lint. If GOPATH/bin is not exported on PATH, `make lint` will fail with command-not-found, which is an environment issue, not a code FAIL.",
+      "fix": "Ensure $(go env GOPATH)/bin is on PATH before running `make lint`, or invoke the binary by full path. Do not classify a missing-tool error as an AC FAIL."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 1,
+    "claims_verified": 18,
+    "issues_found": 2
+  }
+}

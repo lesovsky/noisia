@@ -26,7 +26,7 @@ Registering a workload in noisia touches **two files** and consists of **6 disti
 1. Flag declarations in `cmd/main.go` (the `var(...)` block inside `main()`).
 2. The `config{}` literal in `cmd/main.go` (dereference each parsed flag pointer).
 3. The `config` struct fields in `cmd/app.go`.
-4. The package import in `cmd/app.go` (alphabetical: between `failconns` and `forkconns`).
+4. The package import in `cmd/app.go` — alphabetical: first, before `deadlocks` (`backendkiller` sorts before all existing workload imports).
 5. The launch `if`-block in `runApplication` (`cmd/app.go`) under the shared `--duration` context.
 6. The `startBackendKillerWorkload` helper at the bottom of `cmd/app.go`.
 
@@ -59,7 +59,8 @@ workload mechanics are covered in Task 01).
    `backendKillerReportInterval time.Duration`.
 
 4. **`cmd/app.go` — import.** Add `"github.com/lesovsky/noisia/backendkiller"` to the import block, in
-   alphabetical position **between** the `failconns` and `forkconns` imports.
+   alphabetical position **first**, before the `deadlocks` import (`backendkiller` sorts before all
+   existing workload imports; `b` < `d`).
 
 5. **`cmd/app.go` — launch block.** Add an `if c.backendKiller { … }` block in `runApplication`,
    mirroring the rollbacks block: `log.Info(...)`, `wg.Add(1)`, a goroutine that calls
@@ -93,7 +94,7 @@ Manual verification (no unit tests for CLI wiring):
       (Bool / Float64 / Int / Bool / Duration).
 - [ ] Five entries added to the `config{}` literal in `cmd/main.go` (each flag pointer dereferenced).
 - [ ] Five fields added to `type config struct` in `cmd/app.go` with matching names and Go types.
-- [ ] `backendkiller` import added in `cmd/app.go` between `failconns` and `forkconns`.
+- [ ] `backendkiller` import added in `cmd/app.go` first, before `deadlocks` (`backendkiller` sorts before all existing workload imports).
 - [ ] `if c.backendKiller { … go startBackendKillerWorkload … }` launch block added in `runApplication`,
       under the shared `--duration` context, mirroring the rollbacks block.
 - [ ] `startBackendKillerWorkload` helper added; builds `backendkiller.Config` from `c`, calls
@@ -156,7 +157,7 @@ Manual verification (no unit tests for CLI wiring):
     `context.WithTimeout(ctx, c.duration)`, runs one `if c.<workload> { … }` block per workload, then
     `wg.Wait()`. The last launch block is the forkconns block; the last helper is
     `startForkconnsWorkload`.
-  - Change: insert the `backendkiller` import between `failconns` and `forkconns`; add the 5 struct
+  - Change: insert the `backendkiller` import first, before `deadlocks` (`backendkiller` sorts before all existing workload imports); add the 5 struct
     fields after `forkconnsRate uint16`; add the `if c.backendKiller { … }` block after the forkconns
     block (before `wg.Wait()`); add `startBackendKillerWorkload` after `startForkconnsWorkload`.
 
@@ -190,7 +191,7 @@ Manual verification (no unit tests for CLI wiring):
   `app.go`.
 - Reference for the Float64 rate flag: `rollbacks.rate` in `main.go` and `rollbacksRate float64` in
   `app.go`.
-- Keep alphabetical ordering of the import line; place it manually between `failconns` and `forkconns`.
+- Keep alphabetical ordering of the import line; place it manually first, before `deadlocks` (`backendkiller` sorts before all existing workload imports).
 - Decision 9 (no Conninfo in logs): the only thing this task logs is the fixed
   `"start backend-killer workload"` / `"backend-killer workload failed: %s"` — never interpolate
   `c.postgresConninfo`.
