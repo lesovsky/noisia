@@ -73,3 +73,7 @@ testcontainers starts/stops PostgreSQL automatically; nothing else to set up.
 ### Workload package shape
 **File:** `idlexacts/` (incl. `idlexacts_test.go`)
 **Shows:** the canonical `Config` + `validate()` + `NewWorkload` + `Run` structure and its test layout (config table tests + DB-backed tests).
+
+### Single-connection, self-reporting workload
+**File:** `backendkiller/` (incl. `backendkiller_test.go`)
+**Shows:** the "slow / escalating" workload style — one dedicated `db.Connect` connection (not the pool), a single-threaded rate-limited loop (`rate.Inf` for unlimited), a self-report escalation panel emitted from a separate ticker goroutine reading only atomics, and connection-loss climax detection. Also the `sanitize` helper that keeps `Conninfo` out of every log/error line, and setting `application_name=noisia` on a raw `db.Connect` connection (which, unlike the pool, does not set it). First entry of the new-workloads backlog (`docs/BACKLOG.md`).

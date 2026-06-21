@@ -41,6 +41,7 @@ Each workload is an independent, separately-toggleable generator:
 - **terminate backends** — kill random backends/queries via `pg_terminate_backend()` / `pg_cancel_backend()`.
 - **failed connections** — exhaust `max_connections` so other clients cannot connect.
 - **fork connections** — run single short queries each in a fresh connection (excessive backend forking).
+- **backend-killer** — a single session leaks prepared statements (server-side plan-cache growth) until the backend is OOM-killed and the postmaster restarts the whole instance.
 
 Usable both as a CLI binary and as an importable Go library (each workload package exposes a `Workload` with `NewWorkload` + `Run(ctx)`).
 
