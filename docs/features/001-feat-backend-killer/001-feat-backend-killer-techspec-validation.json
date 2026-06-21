@@ -1,18 +1,5 @@
 {
   "status": "approved",
-  "findings": [
-    {
-      "severity": "minor",
-      "category": "structure",
-      "issue": "Decision 7 (\"Single-threaded, no --jobs, no pre-seeding\") has Decision + Rationale but no \"Alternatives considered\" line, unlike Decisions 1-6.",
-      "fix": "Add an \"Alternatives considered:\" line to Decision 7 (e.g. multi-connection load spread across backends — rejected because OOM must hit a single backend), or note that no viable alternative exists."
-    },
-    {
-      "severity": "minor",
-      "category": "tasks",
-      "issue": "Task 3 \"Files to read\" lists `001-feat-backend-killer.md` as a bare filename without the docs/features path prefix, while other paths are repo-relative.",
-      "fix": "Use the full path `docs/features/001-feat-backend-killer/001-feat-backend-killer.md` for consistency and unambiguous resolution by the executor."
-    }
-  ],
-  "summary": "Tech-spec passes template compliance with zero critical/major findings. All required sections present and non-empty (Solution, Architecture with both subsections, 7 Decisions, Data Models, Dependencies with both subsections, Testing Strategy size=M, Agent Verification Plan with all 3 subsections, Risks table, Acceptance Criteria, Implementation Tasks by waves, plus Backward Compatibility). Frontmatter valid (created/status=draft/branch/size=M). File paths and one-word package naming match architecture.md and patterns.md. Risks are realistic with mitigations in table form. Verification steps are concrete bash commands; verify: present on observable tasks. 4 tasks (<=15), all skills (code-writing/documentation-writing/pre-deploy-qa) and reviewers (dev-code-reviewer/dev-security-auditor/dev-test-reviewer — all exist) match the catalog. Final Wave with Pre-deploy QA present. Task descriptions are brief scope (no AC/TDD anchors/line-number refs/how-to). Technical decisions live in the Decisions section, not embedded in task descriptions. No time-based estimates. No wave file-conflicts: Wave 1 touches only backendkiller/*, Wave 2 Task 2 touches cmd/*, Task 3 touches README.md — no intersections; wave dependencies are logical (CLI wiring after package; QA last). Two minor cosmetic findings only."
+  "findings": [],
+  "summary": "Round 2: tech-spec passes template-compliance and task-quality validation with zero findings. Both round-1 cosmetics are fixed: Decision 7 now has an 'Alternatives considered' line; Task 3 'Files to read' uses the full docs/features/... path. New Decisions 8 (application_name=noisia) and 9 (no Conninfo in logs) both follow the Decision + Rationale + Alternatives considered format. Frontmatter valid (created YYYY-MM-DD, status=draft, branch filled, size=M). All template sections present and non-empty. Tasks are brief scope statements with no AC/TDD/how-to/line-number leakage; technical decisions stay in the Decisions section. Skills valid (code-writing, documentation-writing, pre-deploy-qa); reviewers are all standard catalog agents and exist on disk. Time-free wave ordering preserved; Final Wave (Task 4 Pre-deploy QA) intact. Wave conflict check clean: Task 1 touches backendkiller/* only, Wave 2 splits cmd/* (Task 2) vs README.md (Task 3) with no overlap, Task 4 modifies nothing; dependencies respect wave order, no cycles. Task count = 4 (<=15). Standards consistent with architecture.md (one package per workload) and patterns.md (no-hyphen package name, db-interface access, context-only stop, Conninfo never logged)."
 }

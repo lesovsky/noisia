@@ -113,6 +113,9 @@ concurrency-safe, so the report-ticker goroutine never queries it — it only pr
 published via an atomic). A read failure is a per-tick recoverable error (skip the field, `Warnf` once,
 continue); only a broken `PREPARE` connection triggers the climax. On PG<14 (relation absent) degrade
 gracefully: warn once, drop the memory field, keep the counter.
+**Timing:** the loop goroutine has no ticker of its own (it is driven by `rate.Limiter.Allow()`), so it
+gates the memory read by elapsed time — after a `Conn.Exec` it checks `time.Since(lastMemoryRead) >= ReportInterval`,
+and if due, runs the memory `SELECT`, publishes the value to the atomic, and resets the timestamp.
 **Rationale:** Reads the workload's OWN backend (not external monitoring); preserves the self-report
 principle with the counter as the crash-surviving primary.
 **Alternatives considered:** Polling external memory views / OS — rejected (external monitoring, against

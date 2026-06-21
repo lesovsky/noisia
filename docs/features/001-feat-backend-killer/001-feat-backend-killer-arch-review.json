@@ -12,23 +12,9 @@
     {
       "check": "scalability",
       "severity": "minor",
-      "issue": "With rate=0 (rate.Inf) the loop is a maximally tight busy-poll: Allow() always returns true, so the for{} runs as fast as the CPU can schedule it, limited only by conn.Exec latency. This is intentional per the spec ('peg a CPU core'), but the spec's risk register only says 'documented'. Under a real kill scenario the operator may run other workloads simultaneously; a note in the tech-spec risk table acknowledging that unlimited mode competes with the rate-limited burst=1 token-bucket of other workloads in the same process would be prudent. Not a design defect.",
-      "location": "Decision 2: rate=0 means unlimited via rate.Inf",
-      "fix": "Add a sentence to the risk register: 'Unlimited mode (rate=0) saturates one CPU core; avoid combining with CPU-sensitive workloads on the same host without --backend-killer.rate throttling.'"
-    },
-    {
-      "check": "scalability",
-      "severity": "minor",
-      "issue": "The escalation panel ticker and the PREPARE loop both run in the same goroutine (implied by the single-threaded design). If a PREPARE takes long (e.g. backend is already swapping), the ticker fires late and the Infof call happens only after Exec returns. This is acceptable for a diagnostic tool but creates non-deterministic panel timing under memory pressure — exactly when timely output matters most. A separate goroutine for the ticker (select on ticker.C and ctx.Done) would decouple report cadence from Exec latency.",
-      "location": "Section 'How it works', step 4 (ticker every report-interval)",
-      "fix": "Consider running the ticker in a separate goroutine that reads an atomic counter snapshot, so the escalation panel stays on cadence even when conn.Exec is blocked. This is a quality-of-life improvement, not a correctness issue."
-    },
-    {
-      "check": "api_contracts",
-      "severity": "minor",
-      "issue": "Decision 5 treats any conn.Exec error under a live ctx as the OOM climax and returns nil. This is consistent with repo convention. However, the spec also says 'non-connection query error is a per-tick recoverable error: Warnf and continue'. These two branches are described narratively but the boundary between them is not crisply defined in the spec: a PREPARE syntax error (from a bug in the builder) would be mis-classified as a climax on the first error, silently returning nil and masking the defect. A one-line note clarifying that the climax branch fires only when the connection is broken (any error on first PREPARE that has not yet produced any prepared statements, or after the counter is >0) would close the ambiguity.",
-      "location": "Decision 5: Connection-loss = climax, no error typing",
-      "fix": "Add a note: if the very first Exec (stmt counter == 0) fails, return the error rather than nil (treat as init failure), so a misconfigured plan builder surfaces as an error instead of a silent 'climax'."
+      "issue": "The spec says the --show-memory SELECT is issued by the loop goroutine 'on its report cadence', but the loop goroutine has no ticker of its own — it is driven by rate.Limiter.Allow(). The mechanism for triggering a timed memory read from inside the rate-limited loop is unspecified: if the implementation uses time.Since(lastReport) >= ReportInterval as an inline check after each Allow() iteration, the cadence will be approximate and PREPARE-count-dependent at high rates. This is acceptable for a diagnostic tool, but the ambiguity may lead an implementor to add a second ticker in the loop goroutine — which would be fine architecturally — or to skip the timing and read on every N-th iteration, breaking the cadence semantics. A one-line note in Decision 6 describing the recommended timing mechanism (e.g. 'use time.Since check inside the loop after each Exec') would close this gap.",
+      "location": "Decision 6 / Architecture 'How it works' step 4",
+      "fix": "Add to Decision 6: 'The loop goroutine performs the memory SELECT by checking time.Since(lastMemoryRead) >= ReportInterval after each Conn.Exec call, then updating the atomic and resetting the timestamp. No separate ticker is needed in the loop goroutine.'"
     }
   ],
   "risk_assessment": {
@@ -36,5 +22,5 @@
     "complexity": "low",
     "tech_debt": "low"
   },
-  "summary": "The backendkiller spec is architecturally sound and fits the codebase without friction. Package shape, db.Connect single-connection choice, rate.Inf idiom, loop pattern, CLI wiring, test harness layout, and the Conninfo-never-logged invariant all align precisely with existing conventions. Three minor observations are noted (tight-loop CPU note, ticker-in-loop timing, first-Exec error classification) — none block implementation."
+  "summary": "All three round-1 findings are correctly addressed. The counter==0 init-error guard (Decision 5) cleanly separates builder bugs from OOM events, consistent with rollbacks.runWorker conventions. The separate ticker goroutine reading an atomic counter is sound Go concurrency practice — pgx.Conn is not goroutine-safe, and the spec enforces the invariant that only the loop goroutine calls Conn.Exec/Query. One minor implementation ambiguity remains: how the loop goroutine times its --show-memory SELECT without its own ticker. Not a blocker; easily resolved during implementation."
 }
