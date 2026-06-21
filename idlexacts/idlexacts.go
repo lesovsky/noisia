@@ -99,8 +99,6 @@ func (w *workload) Run(ctx context.Context) error {
 
 // startLoop starts workload using passed settings and database connection.
 func startLoop(ctx context.Context, log log.Logger, pool db.DB, tables []string, jobs uint16, minTime, maxTime time.Duration) error {
-	rand.Seed(time.Now().UnixNano())
-
 	// Increment maxTime up to 1 due to rand.Int63n() never return max value.
 	maxTime++
 
@@ -164,7 +162,6 @@ func selectRandomTable(tables []string) string {
 		return ""
 	}
 
-	rand.Seed(time.Now().UnixNano())
 	return tables[rand.Intn(len(tables))]
 }
 

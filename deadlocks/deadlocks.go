@@ -140,7 +140,6 @@ func executeDeadlock(ctx context.Context, log log.Logger, conninfo string) error
 	}
 
 	// insert two rows
-	rand.Seed(time.Now().UnixNano())
 	id1, id2 := rand.Int(), rand.Int()
 	_, _, err = conn1.Exec(ctx, "INSERT INTO _noisia_deadlocks_workload (id, payload) VALUES ($1, md5(random()::text)), ($2, md5(random()::text))", id1, id2)
 	if err != nil {

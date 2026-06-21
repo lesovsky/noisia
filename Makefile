@@ -22,7 +22,7 @@ dep: ## Get the dependencies
 	go mod download
 
 lint: ## Lint the source files
-	golangci-lint run --timeout 5m -E golint -e '(method|func) [a-zA-Z]+ should be [a-zA-Z]+'
+	golangci-lint run --timeout 5m
 
 test: dep ## Run tests
 	# -p 1 serializes package tests: each package spins its own PostgreSQL

@@ -1,9 +1,12 @@
+version: 2
+
 before:
   hooks:
-  - make dep
+    - make dep
 
 builds:
-  - binary: noisia
+  - id: noisia
+    binary: noisia
     main: ./cmd
     goarch:
       - amd64
@@ -16,15 +19,17 @@ builds:
       - -X main.appName=noisia -X main.gitTag={{.Tag}} -X main.gitCommit={{.Commit}} -X main.gitBranch={{.Branch}}
 
 archives:
-  - builds: [noisia]
+  - ids: [noisia]
+    formats: [tar.gz]
 
 changelog:
   sort: asc
 
 nfpms:
-  - vendor: noisia
+  - ids: [noisia]
+    vendor: noisia
     homepage: https://github.com/lesovsky/noisia
     maintainer: Alexey Lesovsky
     description: Harmful workload generator for PostgreSQL
     license: BSD-3
-    formats: [ deb, rpm ]
+    formats: [deb, rpm]

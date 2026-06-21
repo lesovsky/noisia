@@ -111,7 +111,29 @@ is on go1.25.10 → close it by building on go1.25.11+ (handle in Step 3 / CI to
   - **toolchain**: pinned `toolchain go1.25.11` in go.mod → closes stdlib `GO-2026-5037`.
   - testify/zerolog/x/time/x/text/x/crypto already on current versions from earlier steps.
   - **`govulncheck ./...` → "No vulnerabilities found"** (fully clean, incl. test deps).
-- ⬜ Step 4 (CI/release modernization) — next.
+- ✅ **Step 4 — CI/release modernization DONE.**
+  - **CI test job restructured:** runs directly on `ubuntu-latest` (no `container:
+    golang`, no `services: postgres`) because testcontainers needs the host Docker
+    daemon and starts PostgreSQL itself. Go version comes from `go-version-file: go.mod`.
+  - actions bumped: `checkout@v2→v4`, `setup-go@v2→v5`, `goreleaser-action@v2→v6`,
+    Docker Hub login → `docker/login-action@v3` (no more password on the CLI).
+  - goreleaser: `--rm-dist`→`--clean`; `.goreleaser.yml` migrated to `version: 2`
+    (`builds[].id`, `archives.ids`+`formats`, `nfpms.ids`). Dropped the `go-version: 1.15`
+    pin in the goreleaser job.
+  - **golangci-lint:** Makefile `lint` dropped the removed `golint` linter; CI installs
+    golangci-lint **v2.12.2**. Fixed the 6 findings it surfaced — deprecated `rand.Seed`
+    (auto-seeded since Go 1.20) removed from idlexacts/deadlocks/waitxacts/rollbacks.
+  - **Dockerfile:** build stage `golang:1.16`→`golang:1.25`.
+  - Local verification: `make lint` (0 issues), full tests green, `goreleaser check`
+    OK, `goreleaser release --snapshot` produced tar.gz + deb + rpm, `docker build` OK.
+    The GitHub Actions runs themselves can only be confirmed after pushing the branch.
+
+## Done
+
+The infrastructure release is complete: all CVEs closed (`govulncheck` clean),
+pgx on v5, dependencies and Go toolchain current, integration tests portable
+(testcontainers), CI/release pipeline modernized. New workloads (deferred from this
+release) can now be built on a healthy base.
 
 ---
 

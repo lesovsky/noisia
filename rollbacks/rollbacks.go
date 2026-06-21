@@ -158,7 +158,6 @@ func newErrQuery(table string) (string, []interface{}) {
 	// Total number of available erroneous queries.
 	const total = 15
 
-	rand.Seed(time.Now().UnixNano())
 	idx := rand.Intn(total)
 
 	var (
