@@ -77,6 +77,18 @@ conversation_history:
       (3) Likes auto plan-size: detect available memory via procfs and pick plan-size dynamically,
       expose a multiplier flag. Agreed to the cgroup-aware + co-location caveats and the flag scheme.
     summary: "Mechanism kept (valid RSS->OOM path, plan-cache leak is realistic though theoretical). Add show-memory hybrid. Auto plan-size (cgroup->meminfo) + size-multiplier; plan-size=0=auto, >0=override."
+  - question_num: 5
+    timestamp: "2026-06-21 10:55:00"
+    topic: "validation round 1 — adequacy major: drop auto plan-size"
+    agent_question: |
+      Adequacy validator (approved, no critical) flagged auto plan-size via procfs/cgroup as
+      overengineering for v1: brittle net-new platform code, only a heuristic, only valid co-located,
+      unreliable in containers, while --plan-size override already exists. Options: (A) drop auto in v1
+      (recommended), (B) keep, (C) narrow to cgroup v2 only.
+    user_answer: |
+      Drop auto-detect entirely, not even into the backlog — it's genuinely brittle, the profit is
+      unclear, and the existing flags are enough to regulate the load.
+    summary: "Auto plan-size removed entirely. Also dropped size-multiplier (orphaned). Final flags: enable + rate + plan-size + show-memory + report-interval."
 
 # ============================================================================
 # Phase 1: High-Level Feature Understanding
@@ -187,14 +199,12 @@ phase2_user_experience:
     status: "complete"
     value: |
       - `--backend-killer` enables the workload; tuning flags --backend-killer.rate (0=unlimited),
-        --backend-killer.plan-size (0=auto), --backend-killer.size-multiplier (default 1.0),
-        --backend-killer.show-memory (bool), --backend-killer.report-interval (default 1s) exist with
-        defaults + envars.
+        --backend-killer.plan-size (int, sane constant default), --backend-killer.show-memory (bool),
+        --backend-killer.report-interval (default 1s) exist with defaults + envars.
       - Workload uses ONE dedicated connection (db.Connect), not a pool.
       - It issues unique PREPARE statements continuously; the in-process counter grows monotonically.
-      - Plan heaviness scales with plan-size; plan-size=0 auto-detects available memory (cgroup limit
-        first, then /proc/meminfo) and derives plan-size, scaled by size-multiplier; plan-size>0 is an
-        explicit override. Auto is documented as valid only when noisia is co-located with PG.
+      - Plan heaviness scales with plan-size (target-list width); a sane default exists. (Auto plan-size
+        and size-multiplier were dropped in validation round 1.)
       - rate throttles PREPAREs/sec when > 0; 0 means unlimited.
       - Escalation panel logs "backend-killer: prepared stmts=N rate=R/s elapsed=T" every
         report-interval via logger.Infof; no PG-server state polling. With --show-memory, appends an
@@ -213,21 +223,18 @@ phase2_user_experience:
     score: 85
     status: "complete"
     value: |
-      - Big-RAM target: OOM may take long; plan-size (auto or explicit) raises per-stmt cost to speed it.
+      - Connect failure at start: return an init error (setup failure), distinct from a mid-run
+        connection drop (which is success).
+      - PREPARE error mid-run (a query error, not a connection drop): Warnf and continue (per-tick
+        error idiom); should not happen by construction.
+      - Big-RAM target: OOM may take long; raise --backend-killer.plan-size to speed it.
+      - plan-size set very high: a single PREPARE may itself be heavy/slow — acceptable, document.
       - PREPARE name uniqueness across millions of statements: derive from a monotonic counter.
       - ctx cancelled before any OOM: just stop cleanly (the common CI case).
+      - Non-OOM connection drop (network blip, external pg_terminate_backend): noisia cannot tell it
+        apart from OOM, so the climax line says "likely" — conscious limitation.
       - Target restarts and comes back: noisia has already logged climax and run ends (no reconnect loop).
       - rate=0 (unlimited) must not busy-spin pathologically — follow rollbacks/tempfiles loop idiom.
-      - plan-size set very high: a single PREPARE may itself be heavy/slow — acceptable, document.
-      - Auto plan-size co-location: procfs/cgroup measures the host where NOISIA runs, not the PG
-        server. Auto is valid only when noisia is co-located with PG (typical stand). For a remote
-        PG, the user must set an explicit --plan-size (document this clearly).
-      - Container memory: inside a container /proc/meminfo reports HOST RAM; the real cap is the
-        cgroup limit. Auto-detect must read cgroup limit first (v2 /sys/fs/cgroup/memory.max,
-        v1 fallback), then fall back to /proc/meminfo.
-      - Auto plan-size is a heuristic for a reasonable demo time, NOT a guarantee of the exact OOM
-        moment (overcommit, shared_buffers, other processes). multiplier + explicit override exist
-        precisely for this.
       - show-memory on PG < 14: pg_backend_memory_contexts absent → degrade gracefully (skip the
         memory line / warn once), keep the counter.
     gaps: ""
@@ -272,10 +279,10 @@ phase2_user_experience:
       is OWN-backend, same session, not external monitoring; the PREPARE counter remains the
       crash-surviving primary. e.g. "backend-killer: prepared stmts=N rate=R/s elapsed=T backend mem≈X".
       Flags: --backend-killer (enable), --backend-killer.rate (PREPARE/s, 0=unlimited),
-      --backend-killer.plan-size (int, 0=auto-detect via procfs/cgroup, >0=explicit override),
-      --backend-killer.size-multiplier (float, default 1.0, scales the auto heuristic),
-      --backend-killer.show-memory (bool), --backend-killer.report-interval (default 1s),
-      each with .Default() and .Envar("NOISIA_...").
+      --backend-killer.plan-size (int, plan heaviness = target-list width, with a sane constant
+      default), --backend-killer.show-memory (bool), --backend-killer.report-interval (default 1s),
+      each with .Default() and .Envar("NOISIA_..."). NOTE: auto plan-size (procfs/cgroup) and the
+      size-multiplier flag were DROPPED in validation round 1 (overengineering — see notes).
     gaps: ""
     required: true
 
@@ -290,9 +297,9 @@ phase2_user_experience:
       - noisia's own client memory: prepared statements live server-side; client only holds a counter +
         statement names — client footprint stays small (verify no client-side leak).
       - Secret leakage: Conninfo must never be logged.
-      - Auto plan-size mis-detection (remote PG, or cgroup not readable): could pick a wrong plan-size
-        and make the demo too slow/fast. Mitigation: --plan-size override + --size-multiplier; document
-        co-location requirement; warn when falling back to /proc/meminfo.
+      - Client-side memory of noisia itself: prepared statements live server-side; the client keeps
+        only a counter + names. Mitigation: do not accumulate per-statement data client-side (verify
+        no client-side leak).
       - show-memory adds a periodic SELECT in the same session: negligible, but skip cleanly on PG<14.
     gaps: ""
     required: true
@@ -318,9 +325,12 @@ phase2_user_experience:
         disk spill + IO (already covered by tempfiles), not OOM. Mechanism kept.
       - Hybrid panel added (post devil's-advocate): optional own-backend memory line so the demo
         shows the EFFECT (RSS) not only the CAUSE (PREPARE count); counter stays crash-surviving primary.
-      - Auto plan-size (post devil's-advocate): detect available memory (cgroup limit first, then
-        /proc/meminfo) and derive plan-size; --size-multiplier scales it; --plan-size>0 overrides.
-        Valid only when noisia is co-located with PG.
+      - Mechanism is a literal server-side PREPARE <unique> AS ... via conn.Exec (grows the server plan
+        cache), NOT pgx-level prepared statements; heaviness = target-list width.
+      - Auto plan-size REJECTED (validation round 1, adequacy): procfs/cgroup is brittle, platform-
+        dependent, unreliable in containers, only a heuristic, only valid co-located; the manual
+        --plan-size flag is enough. size-multiplier dropped with it (orphaned without auto).
+      - Climax via own-connection loss; cannot distinguish OOM from other drops, hence "likely".
     gaps: ""
     required: false
 
@@ -418,3 +428,6 @@ notes: |
     (3) added auto plan-size (cgroup->meminfo) + size-multiplier + explicit override, with documented
     co-location requirement; auto is a heuristic, not an exact-OOM guarantee.
   - Phase 7 (completeness checker): COMPLETE / high confidence; 2 minor notes resolved.
+  - Validation round 1: quality=changes_required (4 lost topics re-added: connect-at-start error,
+    PREPARE-error mid-run, client-memory risk, large plan-size edge); adequacy=approved with a major
+    overengineering note → auto plan-size + size-multiplier REMOVED entirely per user. Spec updated.
