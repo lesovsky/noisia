@@ -9,6 +9,7 @@ import (
 	"github.com/lesovsky/noisia/idlexacts"
 	"github.com/lesovsky/noisia/log"
 	"github.com/lesovsky/noisia/rollbacks"
+	"github.com/lesovsky/noisia/slotbloat"
 	"github.com/lesovsky/noisia/tempfiles"
 	"github.com/lesovsky/noisia/terminate"
 	"github.com/lesovsky/noisia/waitxacts"
@@ -50,6 +51,12 @@ type config struct {
 	backendKillerPlanSize       int
 	backendKillerShowMemory     bool
 	backendKillerReportInterval time.Duration
+	slotBloat                   bool
+	slotBloatRate               float64
+	slotBloatRows               int
+	slotBloatPayloadBytes       int
+	slotBloatReportInterval     time.Duration
+	slotBloatKeepSlot           bool
 }
 
 func runApplication(ctx context.Context, c config, log log.Logger) error {
@@ -161,6 +168,18 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 			err := startBackendKillerWorkload(ctx, c, log)
 			if err != nil {
 				log.Errorf("backend-killer workload failed: %s", err)
+			}
+			wg.Done()
+		}()
+	}
+
+	if c.slotBloat {
+		log.Info("start slot-bloat workload")
+		wg.Add(1)
+		go func() {
+			err := startSlotBloatWorkload(ctx, c, log)
+			if err != nil {
+				log.Errorf("slot-bloat workload failed: %s", err)
 			}
 			wg.Done()
 		}()
@@ -289,6 +308,24 @@ func startForkconnsWorkload(ctx context.Context, c config, logger log.Logger) er
 			Conninfo: c.postgresConninfo,
 			Rate:     c.forkconnsRate,
 			Jobs:     c.jobs,
+		}, logger,
+	)
+	if err != nil {
+		return err
+	}
+
+	return workload.Run(ctx)
+}
+
+func startSlotBloatWorkload(ctx context.Context, c config, logger log.Logger) error {
+	workload, err := slotbloat.NewWorkload(
+		slotbloat.Config{
+			Conninfo:       c.postgresConninfo,
+			Rate:           c.slotBloatRate,
+			Rows:           c.slotBloatRows,
+			PayloadBytes:   c.slotBloatPayloadBytes,
+			ReportInterval: c.slotBloatReportInterval,
+			KeepSlot:       c.slotBloatKeepSlot,
 		}, logger,
 	)
 	if err != nil {

@@ -42,6 +42,7 @@ Each workload is an independent, separately-toggleable generator:
 - **failed connections** — exhaust `max_connections` so other clients cannot connect.
 - **fork connections** — run single short queries each in a fresh connection (excessive backend forking).
 - **backend-killer** — a single session leaks prepared statements (server-side plan-cache growth) until the backend is OOM-killed and the postmaster restarts the whole instance.
+- **slot-bloat** — a single un-consumed physical replication slot pins WAL while UPDATE churn runs over a flat pre-seeded table, so `pg_wal` grows unbounded (checkpoints can't reclaim it) until the disk fills and the instance PANICs; self-reports its own payload bytes, not server WAL state.
 
 Usable both as a CLI binary and as an importable Go library (each workload package exposes a `Workload` with `NewWorkload` + `Run(ctx)`).
 

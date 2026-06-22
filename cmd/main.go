@@ -51,6 +51,12 @@ func main() {
 		backendKillerPlanSize       = kingpin.Flag("backend-killer.plan-size", "Target-list width per PREPARE").Default("1000").Envar("NOISIA_BACKEND_KILLER_PLAN_SIZE").Int()
 		backendKillerShowMemory     = kingpin.Flag("backend-killer.show-memory", "Append own-backend memory estimate to the report").Default("false").Envar("NOISIA_BACKEND_KILLER_SHOW_MEMORY").Bool()
 		backendKillerReportInterval = kingpin.Flag("backend-killer.report-interval", "Escalation panel print cadence").Default("1s").Envar("NOISIA_BACKEND_KILLER_REPORT_INTERVAL").Duration()
+		slotBloat                   = kingpin.Flag("slot-bloat", "Run slot-bloat workload").Default("false").Envar("NOISIA_SLOT_BLOAT").Bool()
+		slotBloatRate               = kingpin.Flag("slot-bloat.rate", "UPDATE rate per second; 0 means unlimited").Default("0").Envar("NOISIA_SLOT_BLOAT_RATE").Float64()
+		slotBloatRows               = kingpin.Flag("slot-bloat.rows", "Number of seed rows (N)").Default("1000").Envar("NOISIA_SLOT_BLOAT_ROWS").Int()
+		slotBloatPayloadBytes       = kingpin.Flag("slot-bloat.payload-bytes", "Payload bytes per row/UPDATE (K)").Default("8192").Envar("NOISIA_SLOT_BLOAT_PAYLOAD_BYTES").Int()
+		slotBloatReportInterval     = kingpin.Flag("slot-bloat.report-interval", "Escalation panel print cadence").Default("1s").Envar("NOISIA_SLOT_BLOAT_REPORT_INTERVAL").Duration()
+		slotBloatKeepSlot           = kingpin.Flag("slot-bloat.keep-slot", "Keep slot and table on graceful exit").Default("false").Envar("NOISIA_SLOT_BLOAT_KEEP_SLOT").Bool()
 	)
 	kingpin.Parse()
 
@@ -95,6 +101,12 @@ func main() {
 		backendKillerPlanSize:       *backendKillerPlanSize,
 		backendKillerShowMemory:     *backendKillerShowMemory,
 		backendKillerReportInterval: *backendKillerReportInterval,
+		slotBloat:                   *slotBloat,
+		slotBloatRate:               *slotBloatRate,
+		slotBloatRows:               *slotBloatRows,
+		slotBloatPayloadBytes:       *slotBloatPayloadBytes,
+		slotBloatReportInterval:     *slotBloatReportInterval,
+		slotBloatKeepSlot:           *slotBloatKeepSlot,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
