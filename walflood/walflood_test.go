@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -200,8 +201,9 @@ func (f *fakeConn) Close() error { return nil }
 
 func Test_runChurn_firstExecError(t *testing.T) {
 	// The first Exec error with the shared counter still at 0 is a setup defect and is
-	// returned as an init error, never masquerading as a climax.
-	conn := &fakeConn{execErr: fmt.Errorf("permission denied"), execOKBefore: 0}
+	// returned as an init error, never masquerading as a climax. The returned error must
+	// also be sanitized — a DSN-carrying pgx error must not leak through.
+	conn := &fakeConn{execErr: fmt.Errorf("dial tcp failed host=SENTINEL_SECRET refused"), execOKBefore: 0}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -211,6 +213,7 @@ func Test_runChurn_firstExecError(t *testing.T) {
 
 	err := runChurn(ctx, conn, log.NewDefaultLogger("error"), config, "UPDATE t SET payload=$1 WHERE id=$2", 1, 5, &counter)
 	assert.Error(t, err)
+	assert.NotContains(t, err.Error(), "SENTINEL_SECRET", "init error must be sanitized")
 	assert.Equal(t, int64(0), counter.Load())
 }
 
@@ -222,13 +225,16 @@ func Test_runChurn_climaxAfterSuccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
+	logger := &captureLogger{}
 	var counter atomic.Int64
 	config := Config{Conninfo: "x", Rate: 0, Rows: 5, PayloadBytes: 8, ReportInterval: time.Second, Jobs: 1}
 
-	err := runChurn(ctx, conn, log.NewDefaultLogger("error"), config, "UPDATE t SET payload=$1 WHERE id=$2", 1, 5, &counter)
+	err := runChurn(ctx, conn, logger, config, "UPDATE t SET payload=$1 WHERE id=$2", 1, 5, &counter)
 	assert.NoError(t, err)
 	// 3 successful UPDATEs × 8 bytes.
 	assert.Equal(t, int64(24), counter.Load())
+	// The climax side-effect (explicit in the TDD anchor) must actually be logged.
+	assert.Contains(t, strings.Join(logger.lines(), "\n"), "connection lost", "climax line must be logged")
 }
 
 func Test_runChurn_ctxDoneClean(t *testing.T) {
@@ -278,20 +284,20 @@ func Test_runChurn_twoWorkersConcurrentFirstFailure(t *testing.T) {
 
 func Test_runChurn_churnsWithinRange(t *testing.T) {
 	// A worker must only UPDATE ids inside its disjoint [lo, hi] sub-range (the
-	// anti-self-defeat guarantee), cycling within the range.
-	rec := &recordingConn{}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	// anti-self-defeat guarantee), cycling within the range. Bounded by iteration
+	// count (not wall-clock): the conn cancels ctx after stopAfter Execs.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	rec := &recordingConn{stopAfter: 50, cancel: cancel}
 
 	var counter atomic.Int64
 	config := Config{Conninfo: "x", Rate: 0, Rows: 10, PayloadBytes: 8, ReportInterval: time.Second, Jobs: 2}
 
-	// Worker owns ids 6..10.
+	// Worker owns ids 6..10; 50 Execs over a 5-wide range cover every id at least once.
 	_ = runChurn(ctx, rec, log.NewDefaultLogger("error"), config, "UPDATE t SET payload=$1 WHERE id=$2", 6, 10, &counter)
 
 	ids := rec.seenIDs()
-	assert.NotEmpty(t, ids, "worker must have issued at least one UPDATE")
+	assert.Len(t, ids, 5, "worker must cover exactly its 5-id range")
 	for id := range ids {
 		assert.GreaterOrEqual(t, id, 6, "id must not fall below the worker's range")
 		assert.LessOrEqual(t, id, 10, "id must not exceed the worker's range")
@@ -299,10 +305,14 @@ func Test_runChurn_churnsWithinRange(t *testing.T) {
 }
 
 // recordingConn is a db.Conn double that records the id bind argument of every UPDATE
-// so a test can assert a worker stays within its disjoint range.
+// so a test can assert a worker stays within its disjoint range. After stopAfter Execs
+// it cancels the context, bounding the rate.Inf churn loop without relying on wall-clock.
 type recordingConn struct {
-	mu  sync.Mutex
-	ids map[int]struct{}
+	mu        sync.Mutex
+	ids       map[int]struct{}
+	calls     int
+	stopAfter int
+	cancel    context.CancelFunc
 }
 
 func (c *recordingConn) Begin(ctx context.Context) (db.Tx, error) { panic("not implemented") }
@@ -316,6 +326,10 @@ func (c *recordingConn) Exec(ctx context.Context, sql string, args ...interface{
 		if id, ok := args[1].(int); ok {
 			c.ids[id] = struct{}{}
 		}
+	}
+	c.calls++
+	if c.stopAfter > 0 && c.calls >= c.stopAfter && c.cancel != nil {
+		c.cancel()
 	}
 	return 0, "UPDATE", nil
 }
