@@ -42,6 +42,7 @@ The repo is a Go module (`github.com/lesovsky/noisia`) with one package per work
 ├── forkconns/         [workload: excessive backend forking]
 ├── backendkiller/     [workload: prepared-statement leak → backend OOM → instance restart]
 ├── slotbloat/         [workload: un-consumed physical replication slot pins WAL → pg_wal fills disk → instance PANIC]
+├── walflood/          [workload: --jobs parallel UPDATE-churn workers over disjoint ranges flood WAL → replication lag / disk-full]
 ├── Dockerfile         [multi-stage build → scratch image]
 ├── Makefile           [dep/lint/test/build/docker targets]
 └── .github/workflows/ [CI: default.yml (lint+test), release.yml (test+docker+goreleaser)]

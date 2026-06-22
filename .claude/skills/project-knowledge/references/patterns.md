@@ -78,6 +78,21 @@ testcontainers starts/stops PostgreSQL automatically; nothing else to set up.
 **File:** `backendkiller/` (incl. `backendkiller_test.go`)
 **Shows:** the "slow / escalating" workload style — one dedicated `db.Connect` connection (not the pool), a single-threaded rate-limited loop (`rate.Inf` for unlimited), a self-report escalation panel emitted from a separate ticker goroutine reading only atomics, and connection-loss climax detection. Also the `sanitize` helper that keeps `Conninfo` out of every log/error line, and setting `application_name=noisia` on a raw `db.Connect` connection (which, unlike the pool, does not set it). First entry of the new-workloads backlog (`docs/BACKLOG.md`).
 
+### Multi-worker fan-out over disjoint ranges (per-worker connection)
+**File:** `walflood/` (incl. `walflood_test.go`)
+**Shows:** the "slow/escalating + self-report" pattern scaled to N concurrent workers driven by the
+global `--jobs` flag. Key lessons: spawn long-lived workers with the **rollbacks** `sync.WaitGroup` +
+goroutine-per-job shape (not the idlexacts/deadlocks guard-channel, which is spawn-on-completion); give
+each worker its **own** `db.Connect` rather than sharing a pool, because `db.NewPostgresDB` never sets
+`max_conns` and the pgxpool default `max(4, NumCPU)` would silently cap real parallelism below `--jobs`
+(and make a "--jobs honored" test flaky on low-CPU hosts) — the per-worker connection also needs a manual
+`SET application_name='noisia'` since `db.Connect` (unlike the pool) does not set it; partition the work
+into disjoint id sub-ranges so workers never serialize on row locks (validate `rows >= jobs` to drop the
+empty-tail edge); share ONE `*atomic.Int64` and judge init-vs-climax on it so one slow worker's early
+error cannot masquerade as a setup failure once any worker has written. The integration test asserts
+`--jobs` is honored via `>= N` `application_name='noisia'` backends in `pg_stat_activity`, independent of
+host CPU.
+
 ### Cleanup of persistent server objects (fresh connection)
 **File:** `slotbloat/` (incl. `slotbloat_test.go`)
 **Shows:** the "slow / escalating" pattern extended to a workload that creates **persistent** server objects (a physical replication slot + a regular table) which must be dropped on exit. Key lesson learned on the stand: a workload's own `db.Connect` connection is **dead at cleanup time** — when the run is stopped via ctx-cancel, pgx closes any connection whose in-flight query was interrupted, so the deferred cleanup must open a **fresh** `db.Connect` on a timeout-bounded `context.Background()` to run the drops (reusing the workload conn fails with `failed to deallocate cached statement(s): conn closed`). Pool-based workloads (e.g. `waitxacts`) get a healthy connection for free; single-`db.Connect` workloads must open one explicitly. Also: seed large tables with one set-based `INSERT ... SELECT generate_series(...)` (not a per-row loop) and bracket a potentially long seed with explicit progress log lines so it doesn't look hung.
