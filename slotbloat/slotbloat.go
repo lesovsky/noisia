@@ -317,6 +317,11 @@ func (w *workload) cleanup(slotName, tableIdent string) {
 	}
 	defer func() { _ = conn.Close() }()
 
+	// Attribute the cleanup DROPs in pg_stat_activity (like Run does). Best-effort:
+	// the drops and their honest logging are what matter, so a failed SET must not
+	// abort cleanup — ignore the error and proceed. Conninfo is never logged.
+	_, _, _ = conn.Exec(ctx, "SET application_name = 'noisia'")
+
 	_, _, terr := conn.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tableIdent))
 	_, _, serr := conn.Exec(ctx, "SELECT pg_drop_replication_slot($1)", slotName)
 	if terr != nil || serr != nil {
