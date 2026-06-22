@@ -26,10 +26,14 @@ import (
 	"fmt"
 	"math/rand"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lesovsky/noisia"
+	"github.com/lesovsky/noisia/db"
 	"github.com/lesovsky/noisia/log"
+	"golang.org/x/time/rate"
 )
 
 // Config defines configuration settings for wal-flood workload.
@@ -102,12 +106,258 @@ func NewWorkload(config Config, logger log.Logger) (noisia.Workload, error) {
 	return &workload{config, logger}, nil
 }
 
-// Run drives the WAL flood. The seed, the Jobs-way disjoint-range churn fan-out, the
-// reporter and the cleanup are implemented in Task 02.
+// Run opens a dedicated connection to seed one fixed-heap table, then fans out Jobs
+// long-lived churn workers over disjoint id ranges while a ticker reports progress.
+// Each worker owns its own connection (no shared pool, so the pool default max_conns
+// cannot cap parallelism below --jobs). The seed table is dropped in a defer on a
+// fresh context.Background() (ctx is already cancelled at exit).
 func (w *workload) Run(ctx context.Context) error {
-	// TODO(task-02): seed table, spawn Jobs churn workers over disjoint ranges,
-	// run the reporter ticker, and drop the seed table on a fresh connection.
+	conn, err := db.Connect(ctx, w.config.Conninfo)
+	if err != nil {
+		// Never echo the raw error: it may carry DSN fragments (e.g. password=…).
+		return fmt.Errorf("connect to target failed: %s", sanitize(err))
+	}
+	defer func() { _ = conn.Close() }()
+
+	// Attribute the seeding backend in pg_stat_activity. db.Connect (unlike the pool
+	// path) does not set application_name, so set it locally here.
+	_, _, err = conn.Exec(ctx, "SET application_name = 'noisia'")
+	if err != nil {
+		return fmt.Errorf("set application_name failed: %s", sanitize(err))
+	}
+
+	// Build the per-run table name once. The suffix is restricted to [a-z0-9], which
+	// alone makes the identifier injection-safe; double-quoting is belt-and-suspenders.
+	// The identifier (which cannot be a bind parameter) is reused verbatim in
+	// CREATE/UPDATE/DROP; payload and id are bind args.
+	tableIdent := "\"noisia_walflood_" + randomSuffix(8) + "\""
+
+	// Cleanup is registered right after a successful connect so the table is dropped
+	// even if seeding fails. It runs on a fresh context.Background() because ctx is
+	// already cancelled at exit and a drop on a cancelled ctx would fail (ADR-002-2).
+	defer w.cleanup(tableIdent)
+
+	// Seed the fixed row set churned in place. Seeding can take a while for large
+	// rows/payload, and the reporter starts only after it, so emit explicit feedback.
+	w.logger.Infof("wal-flood: seeding %d rows (~%s), this may take a while...", w.config.Rows, formatBytes(int64(w.config.Rows)*int64(w.config.PayloadBytes)))
+	err = prepare(ctx, conn, tableIdent, w.config.Rows, w.config.PayloadBytes)
+	if err != nil {
+		// A clean ctx stop must not be reported as a failure.
+		if ctx.Err() != nil {
+			return nil
+		}
+		return fmt.Errorf("seed table failed: %s", sanitize(err))
+	}
+	w.logger.Infof("wal-flood: seeding done, starting %d churn workers", w.config.Jobs)
+
+	// counter holds the total payload bytes successfully written by all workers
+	// (successful UPDATEs × K). It is shared across workers and read by the reporter,
+	// which must never touch a (not concurrency-safe) Conn.
+	var counter atomic.Int64
+
+	start := time.Now()
+	tickerDone := make(chan struct{})
+	var reporterWg sync.WaitGroup
+	reporterWg.Add(1)
+	go func() {
+		defer reporterWg.Done()
+		w.runReporter(ctx, tickerDone, start, &counter)
+	}()
+
+	// Fan out exactly Jobs long-lived workers, each over its own disjoint id range.
+	ranges := partition(w.config.Rows, w.config.Jobs)
+	updateSQL := fmt.Sprintf("UPDATE %s SET payload = $1 WHERE id = $2", tableIdent)
+
+	var wg sync.WaitGroup
+	errs := make([]error, len(ranges))
+	wg.Add(len(ranges))
+	for i, r := range ranges {
+		go func(idx, lo, hi int) {
+			defer wg.Done()
+			errs[idx] = w.runWorker(ctx, updateSQL, lo, hi, &counter)
+		}(i, r[0], r[1])
+	}
+	wg.Wait()
+
+	close(tickerDone)
+	reporterWg.Wait()
+
+	// Surface the first init error (a real setup defect — e.g. exhausted connections)
+	// reported by any worker; a clean stop or a climax leaves all errs nil.
+	for _, e := range errs {
+		if e != nil {
+			return e
+		}
+	}
+
 	return nil
+}
+
+// runWorker opens its OWN dedicated connection and drives the churn loop over the
+// [lo, hi] id sub-range. A per-worker connection guarantees Jobs concurrent in-flight
+// UPDATEs regardless of any pool sizing. Every connection error passes through
+// sanitize so a pgx error can never leak a DSN fragment.
+func (w *workload) runWorker(ctx context.Context, updateSQL string, lo, hi int, counter *atomic.Int64) error {
+	conn, err := db.Connect(ctx, w.config.Conninfo)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return fmt.Errorf("worker connect failed: %s", sanitize(err))
+	}
+	defer func() { _ = conn.Close() }()
+
+	// db.Connect does not set application_name; do it best-effort so the worker is
+	// attributable in pg_stat_activity. A failed SET must not abort the worker, but
+	// its error still passes through sanitize so the DSN is never logged.
+	if _, _, serr := conn.Exec(ctx, "SET application_name = 'noisia'"); serr != nil {
+		w.logger.Warnf("wal-flood: set application_name failed: %s", sanitize(serr))
+	}
+
+	return runChurn(ctx, conn, w.logger, w.config, updateSQL, lo, hi, counter)
+}
+
+// runChurn is one worker's rate-limited UPDATE loop. It owns its Conn and cycles id
+// only within its disjoint [lo, hi] sub-range, adding K to the SHARED counter for
+// every successful UPDATE.
+//
+// Returns nil on a clean ctx stop. On a connection loss after at least one successful
+// UPDATE anywhere (shared counter>0) while the context is still live, it logs the
+// climax line and returns nil. The first Exec error while the shared counter is still
+// 0 is returned as an init error, so a broken setup cannot masquerade as a successful
+// disk-full event — and one worker's early error cannot do so either once any worker
+// has written (Decision 3).
+func runChurn(ctx context.Context, conn db.Conn, logger log.Logger, config Config, updateSQL string, lo, hi int, counter *atomic.Int64) error {
+	lim := rate.Limit(config.Rate)
+	if config.Rate == 0 {
+		lim = rate.Inf
+	}
+	limiter := rate.NewLimiter(lim, 1)
+
+	payload := make([]byte, config.PayloadBytes)
+	id := lo - 1
+
+	for {
+		if limiter.Allow() {
+			// Cycle id over the worker's disjoint range [lo, hi].
+			id++
+			if id > hi {
+				id = lo
+			}
+
+			_, _, err := conn.Exec(ctx, updateSQL, payload, id)
+			if err != nil {
+				// A clean ctx stop must not be reported as a failure.
+				if ctx.Err() != nil {
+					return nil
+				}
+
+				if counter.Load() > 0 {
+					logger.Infof("wal-flood: connection lost — target likely disk-full/restarted")
+					return nil
+				}
+
+				// First Exec failed with no prior success anywhere: setup defect.
+				return fmt.Errorf("churn update failed: %s", sanitize(err))
+			}
+
+			counter.Add(int64(config.PayloadBytes))
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+	}
+}
+
+// runReporter prints the escalation panel every ReportInterval, reading only the
+// shared atomic payload-bytes counter. It never queries a Conn.
+func (w *workload) runReporter(ctx context.Context, done <-chan struct{}, start time.Time, counter *atomic.Int64) {
+	ticker := time.NewTicker(w.config.ReportInterval)
+	defer ticker.Stop()
+
+	var prev int64
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-ticker.C:
+			cur := counter.Load()
+			elapsed := time.Since(start)
+			rate := int64(float64(cur-prev) / w.config.ReportInterval.Seconds())
+			prev = cur
+
+			w.logger.Infof("wal-flood: payload-written=%s rate=%s/s elapsed=%s", formatBytes(cur), formatBytes(rate), elapsed.Truncate(time.Second))
+		}
+	}
+}
+
+// prepare creates the seed table and inserts N rows of K-byte payload in a single
+// transaction. The heap is deliberately fixed: the churn loop UPDATEs these rows in
+// place, so only WAL grows, not the table.
+func prepare(ctx context.Context, conn db.Conn, tableIdent string, rows, payloadBytes int) error {
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	_, _, err = tx.Exec(ctx, fmt.Sprintf("CREATE TABLE %s (id int PRIMARY KEY, payload bytea)", tableIdent))
+	if err != nil {
+		return err
+	}
+
+	// The payload content is intentionally a fixed zero-filled buffer: WAL is
+	// generated by the UPDATE regardless of byte equality, so the value is irrelevant.
+	payload := make([]byte, payloadBytes)
+	// Seed in a single set-based statement: one server-side round-trip instead of N
+	// network round-trips, which matters for large N over a remote link.
+	insertSQL := fmt.Sprintf("INSERT INTO %s (id, payload) SELECT g, $1 FROM generate_series(1, $2) AS g", tableIdent)
+	_, _, err = tx.Exec(ctx, insertSQL, payload, rows)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+// cleanup drops the seed table on a fresh context.Background() (ctx is already
+// cancelled at exit), bounded by a short timeout so a hung (not dead) target cannot
+// block Run's return forever. It opens its OWN fresh connection rather than reusing a
+// worker conn: a Ctrl+C landing mid-UPDATE aborts the in-flight query and poisons that
+// conn, so a DROP over it would fail and orphan the table (ADR-002-2). Any failure is
+// logged via Warnf with the table name so nothing is silently orphaned. Every error
+// passes through sanitize.
+func (w *workload) cleanup(tableIdent string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Open a fresh connection: a worker conn may be dead after a mid-UPDATE cancel.
+	conn, err := db.Connect(ctx, w.config.Conninfo)
+	if err != nil {
+		// The target may be unreachable (e.g. in PANIC at real disk-full). Nothing was
+		// dropped — say so honestly so the table is not silently assumed gone.
+		w.logger.Warnf("wal-flood: cleanup failed for table %s: %s — drop manually", tableIdent, sanitize(err))
+		return
+	}
+	defer func() { _ = conn.Close() }()
+
+	// Attribute the cleanup DROP in pg_stat_activity. Best-effort: the drop and its
+	// honest logging are what matter, so a failed SET must not abort cleanup — ignore
+	// the error and proceed. Conninfo is never logged.
+	_, _, _ = conn.Exec(ctx, "SET application_name = 'noisia'")
+
+	_, _, err = conn.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tableIdent))
+	if err != nil {
+		w.logger.Warnf("wal-flood: cleanup failed for table %s: %s — drop manually", tableIdent, sanitize(err))
+		return
+	}
+
+	w.logger.Infof("wal-flood: table dropped")
 }
 
 // partition splits the id space 1..rows into jobs contiguous, non-overlapping
