@@ -441,6 +441,12 @@ func TestWorkload_Run_seedRowCountFlatHeap(t *testing.T) {
 	// The payload counter grows during churn while the heap stays flat: count(*)
 	// remains == Rows across the run (only WAL grows, not the table).
 	const rows = 12
+
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
+	purgeWalFlood(t, obs) // clean slate so discover cannot pick up an orphan table
+
 	config := Config{
 		Conninfo:       db.TestConninfo,
 		Rate:           100,
@@ -450,7 +456,9 @@ func TestWorkload_Run_seedRowCountFlatHeap(t *testing.T) {
 		Jobs:           3,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	// Cancel explicitly after the assertions (not a fixed deadline) so the workload
+	// cannot time out and drop the table while the observer is still polling.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	w, err := NewWorkload(config, log.NewDefaultLogger("error"))
@@ -458,10 +466,6 @@ func TestWorkload_Run_seedRowCountFlatHeap(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() { done <- w.Run(ctx) }()
-
-	obs, err := db.Connect(context.Background(), db.TestConninfo)
-	assert.NoError(t, err)
-	defer func() { _ = obs.Close() }()
 
 	// Wait until the seed table appears, then assert flat heap mid-run.
 	var table string
@@ -647,12 +651,20 @@ func discoverWalFloodTable(t *testing.T, conn db.Conn) string {
 		"SELECT tablename FROM pg_tables WHERE tablename LIKE 'noisia_walflood_%'")
 	assert.NoError(t, err)
 	defer rows.Close()
-	var name string
+	var names []string
 	for rows.Next() {
+		var name string
 		assert.NoError(t, rows.Scan(&name))
+		names = append(names, name)
 	}
 	assert.NoError(t, rows.Err())
-	return name
+	// At most one wal-flood table should exist at a time; more than one means a prior
+	// test orphaned its table, which would mask a real cleanup regression.
+	assert.LessOrEqual(t, len(names), 1, "at most one wal-flood table should exist at a time")
+	if len(names) == 0 {
+		return ""
+	}
+	return names[0]
 }
 
 // countRows returns count(*) for the given table identifier.
