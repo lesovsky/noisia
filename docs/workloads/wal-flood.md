@@ -80,7 +80,9 @@ may not produce a visible effect on fast hardware. For a demonstration, turn up 
 - **Parallelism:** `--jobs=8` (or as many as the host and `max_connections` allow) so multiple backends
   write WAL concurrently.
 - **Payload:** `--wal-flood.payload-bytes=65536` (64 KB) so each UPDATE writes more WAL.
-- **Rows:** `--wal-flood.rows=10000` so writes spread across many heap pages (and `rows >= jobs`).
+- **Rows:** `--wal-flood.rows=10000` so writes spread across many heap pages (and `rows >= jobs`). A
+  small `rows` with a large `payload-bytes` packs many ids onto the same heap page, where concurrent
+  UPDATEs contend on the page lock and the WAL rate drops — keep `rows` generous.
 - **Rate:** leave `--wal-flood.rate=0` (unbounded) for maximum pressure.
 
 ```
