@@ -13,6 +13,7 @@ import (
 	"github.com/lesovsky/noisia/tempfiles"
 	"github.com/lesovsky/noisia/terminate"
 	"github.com/lesovsky/noisia/waitxacts"
+	"github.com/lesovsky/noisia/walflood"
 	"sync"
 	"time"
 )
@@ -57,6 +58,11 @@ type config struct {
 	slotBloatPayloadBytes       int
 	slotBloatReportInterval     time.Duration
 	slotBloatKeepSlot           bool
+	walFlood                    bool
+	walFloodRate                float64
+	walFloodRows                int
+	walFloodPayloadBytes        int
+	walFloodReportInterval      time.Duration
 }
 
 func runApplication(ctx context.Context, c config, log log.Logger) error {
@@ -180,6 +186,18 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 			err := startSlotBloatWorkload(ctx, c, log)
 			if err != nil {
 				log.Errorf("slot-bloat workload failed: %s", err)
+			}
+			wg.Done()
+		}()
+	}
+
+	if c.walFlood {
+		log.Info("start wal-flood workload")
+		wg.Add(1)
+		go func() {
+			err := startWalFloodWorkload(ctx, c, log)
+			if err != nil {
+				log.Errorf("wal-flood workload failed: %s", err)
 			}
 			wg.Done()
 		}()
@@ -326,6 +344,24 @@ func startSlotBloatWorkload(ctx context.Context, c config, logger log.Logger) er
 			PayloadBytes:   c.slotBloatPayloadBytes,
 			ReportInterval: c.slotBloatReportInterval,
 			KeepSlot:       c.slotBloatKeepSlot,
+		}, logger,
+	)
+	if err != nil {
+		return err
+	}
+
+	return workload.Run(ctx)
+}
+
+func startWalFloodWorkload(ctx context.Context, c config, logger log.Logger) error {
+	workload, err := walflood.NewWorkload(
+		walflood.Config{
+			Conninfo:       c.postgresConninfo,
+			Rate:           c.walFloodRate,
+			Rows:           c.walFloodRows,
+			PayloadBytes:   c.walFloodPayloadBytes,
+			ReportInterval: c.walFloodReportInterval,
+			Jobs:           c.jobs,
 		}, logger,
 	)
 	if err != nil {
