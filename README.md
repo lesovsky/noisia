@@ -15,6 +15,7 @@
 - `fork connections` - execute single, short query in a dedicated connection (lead to excessive forking of Postgres backends).
 - `backend-killer` - single session leaks prepared statements (plan-cache growth) inflating its backend's memory until OOM-kill restarts the whole instance; a very large `--backend-killer.plan-size` makes each `PREPARE` heavy/slow.
 - `slot-bloat` - a single un-consumed physical replication slot pins WAL so `pg_wal` grows without bound → disk full → instance PANIC; the data never grows and checkpoints keep running, yet the disk still fills.
+- `wal-flood` - many parallel `UPDATE`-churn workers (`--jobs`) flood WAL on the primary by raw write rate, driving replication lag and — when recycle/archiving can't keep up — `pg_wal` growth toward disk-full; the visible-activity counterpart of `slot-bloat` (disk-full here is environment-dependent, not guaranteed).
 - ...see built-in help for more runtime options.
 
 #### Disclaimer
@@ -90,6 +91,7 @@ Running workloads could impact already running workloads produced by other appli
 | tempfiles  | **Yes**: might increase storage utilization and degrade storage performance  |
 | terminate  | **Yes**: already established database connections could be terminated accidentally  |
 | waitxacts  | **Yes**: locks heavy-write tables; this leads to blocking concurrently executed queries  |
+| walflood  | **Yes**: high-rate WAL generation drives replication lag and IO pressure; in a constrained environment `pg_wal` grows toward disk-full and the instance PANICs  |
 
 #### Demo & tuning guides
 
@@ -97,6 +99,7 @@ The escalating workloads each have a dedicated demo and tuning guide covering ho
 
 - [`docs/workloads/backend-killer.md`](docs/workloads/backend-killer.md) — drive a single backend to OOM and an instance restart; cap memory, disable swap, and turn up the plan pressure.
 - [`docs/workloads/slot-bloat.md`](docs/workloads/slot-bloat.md) — fill `pg_wal` with one forgotten replication slot until the disk is full; CLI flags, two stand recipes, and slot-crash recovery.
+- [`docs/workloads/wal-flood.md`](docs/workloads/wal-flood.md) — flood WAL with parallel `UPDATE`-churn workers; the honest env-dependent contract, the disk-full conditions, demo parameters, and how it differs from `slot-bloat`.
 
 #### Contribution
 - PR's are welcome.

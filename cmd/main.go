@@ -57,6 +57,11 @@ func main() {
 		slotBloatPayloadBytes       = kingpin.Flag("slot-bloat.payload-bytes", "Payload bytes per row/UPDATE (K)").Default("8192").Envar("NOISIA_SLOT_BLOAT_PAYLOAD_BYTES").Int()
 		slotBloatReportInterval     = kingpin.Flag("slot-bloat.report-interval", "Escalation panel print cadence").Default("1s").Envar("NOISIA_SLOT_BLOAT_REPORT_INTERVAL").Duration()
 		slotBloatKeepSlot           = kingpin.Flag("slot-bloat.keep-slot", "Keep slot and table on graceful exit").Default("false").Envar("NOISIA_SLOT_BLOAT_KEEP_SLOT").Bool()
+		walFlood                    = kingpin.Flag("wal-flood", "Run wal-flood workload").Default("false").Envar("NOISIA_WAL_FLOOD").Bool()
+		walFloodRate                = kingpin.Flag("wal-flood.rate", "UPDATE rate per second per worker; 0 means unlimited").Default("0").Envar("NOISIA_WAL_FLOOD_RATE").Float64()
+		walFloodRows                = kingpin.Flag("wal-flood.rows", "Number of seed rows (N)").Default("1000").Envar("NOISIA_WAL_FLOOD_ROWS").Int()
+		walFloodPayloadBytes        = kingpin.Flag("wal-flood.payload-bytes", "Payload bytes per UPDATE (K)").Default("8192").Envar("NOISIA_WAL_FLOOD_PAYLOAD_BYTES").Int()
+		walFloodReportInterval      = kingpin.Flag("wal-flood.report-interval", "Escalation panel print cadence").Default("1s").Envar("NOISIA_WAL_FLOOD_REPORT_INTERVAL").Duration()
 	)
 	kingpin.Parse()
 
@@ -107,6 +112,11 @@ func main() {
 		slotBloatPayloadBytes:       *slotBloatPayloadBytes,
 		slotBloatReportInterval:     *slotBloatReportInterval,
 		slotBloatKeepSlot:           *slotBloatKeepSlot,
+		walFlood:                    *walFlood,
+		walFloodRate:                *walFloodRate,
+		walFloodRows:                *walFloodRows,
+		walFloodPayloadBytes:        *walFloodPayloadBytes,
+		walFloodReportInterval:      *walFloodReportInterval,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

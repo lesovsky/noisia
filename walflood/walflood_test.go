@@ -1,0 +1,732 @@
+// Copyright 2021 The Noisia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+package walflood
+
+import (
+	"context"
+	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/lesovsky/noisia/db"
+	"github.com/lesovsky/noisia/log"
+	"github.com/stretchr/testify/assert"
+)
+
+func TestConfig_validate(t *testing.T) {
+	base := Config{
+		Conninfo:       "host=127.0.0.1 dbname=postgres",
+		Rate:           0,
+		Rows:           1000,
+		PayloadBytes:   8192,
+		ReportInterval: time.Second,
+		Jobs:           4,
+	}
+
+	assert.NoError(t, base.validate(), "valid baseline must pass")
+
+	tests := []struct {
+		name string
+		mut  func(c *Config)
+	}{
+		{"empty conninfo", func(c *Config) { c.Conninfo = "" }},
+		{"negative rate", func(c *Config) { c.Rate = -1 }},
+		{"zero rows", func(c *Config) { c.Rows = 0 }},
+		{"zero payload bytes", func(c *Config) { c.PayloadBytes = 0 }},
+		{"zero report interval", func(c *Config) { c.ReportInterval = 0 }},
+		{"negative report interval", func(c *Config) { c.ReportInterval = -time.Second }},
+		{"zero jobs", func(c *Config) { c.Jobs = 0 }},
+		{"rows less than jobs", func(c *Config) { c.Rows = 2; c.Jobs = 3 }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := base
+			tt.mut(&c)
+			assert.Error(t, c.validate(), "invalid config must be rejected")
+		})
+	}
+}
+
+func Test_partition(t *testing.T) {
+	cases := []struct {
+		rows int
+		jobs uint16
+	}{
+		{1000, 4}, // even split
+		{10, 3},   // rows % jobs != 0 (remainder spread into tail ranges)
+		{11, 3},   // larger remainder (2) lands in the tail ranges
+		{5, 5},    // rows == jobs (one id per worker)
+		{100, 1},  // single worker owns the whole range
+		{7, 2},    // odd remainder
+	}
+
+	for _, c := range cases {
+		ranges := partition(c.rows, c.jobs)
+
+		assert.Len(t, ranges, int(c.jobs), "must return exactly Jobs ranges")
+		assert.Equal(t, 1, ranges[0][0], "coverage must start at id 1")
+		assert.Equal(t, c.rows, ranges[len(ranges)-1][1], "coverage must end at id Rows")
+
+		for i, r := range ranges {
+			assert.LessOrEqual(t, r[0], r[1], "range must be non-empty (lo <= hi)")
+			if i > 0 {
+				assert.Equal(t, ranges[i-1][1]+1, r[0],
+					"ranges must be contiguous with no gap or overlap")
+			}
+		}
+	}
+}
+
+func Test_randomSuffix(t *testing.T) {
+	re := regexp.MustCompile(`^[a-z0-9]+$`)
+
+	// Sample repeatedly: the charset guarantee must hold for every draw, not one.
+	for i := 0; i < 100; i++ {
+		s := randomSuffix(8)
+		assert.Len(t, s, 8, "suffix must have the requested length")
+		assert.Regexp(t, re, s, "suffix must be an injection-safe identifier")
+	}
+}
+
+func Test_sanitize(t *testing.T) {
+	testcases := []struct {
+		name       string
+		err        error
+		suppressed bool
+		want       string // expected output for the non-suppressed (pass-through) cases
+	}{
+		{name: "password token", err: fmt.Errorf("failed: password=SENTINEL_SECRET host=db"), suppressed: true},
+		{name: "host token", err: fmt.Errorf("dial error host=SENTINEL_SECRET"), suppressed: true},
+		{name: "user token", err: fmt.Errorf("auth failed user=SENTINEL_SECRET"), suppressed: true},
+		{name: "dbname token", err: fmt.Errorf("connect failed dbname=SENTINEL_SECRET"), suppressed: true},
+		{name: "database token", err: fmt.Errorf("dial error database=SENTINEL_SECRET"), suppressed: true},
+		{name: "sslmode token", err: fmt.Errorf("tls error sslmode=SENTINEL_SECRET"), suppressed: true},
+		{name: "url form", err: fmt.Errorf("failed: postgres://user:SENTINEL_SECRET@db/noisia"), suppressed: true},
+		// seed/cleanup error paths: a wrapped DSN fragment must still collapse.
+		{name: "seed error", err: fmt.Errorf("seed table failed: dial tcp host=SENTINEL_SECRET refused"), suppressed: true},
+		{name: "cleanup drop error", err: fmt.Errorf("DROP TABLE failed: password=SENTINEL_SECRET timeout"), suppressed: true},
+		{name: "benign", err: fmt.Errorf("server closed the connection unexpectedly"), suppressed: false, want: "server closed the connection unexpectedly"},
+		{name: "nil", err: nil, suppressed: false, want: ""},
+	}
+
+	for _, tc := range testcases {
+		got := sanitize(tc.err)
+		assert.NotContains(t, got, "SENTINEL_SECRET", tc.name)
+		if tc.suppressed {
+			assert.Equal(t, "connection error (details suppressed)", got, tc.name)
+		} else {
+			assert.Equal(t, tc.want, got, tc.name)
+		}
+	}
+}
+
+func Test_formatBytes(t *testing.T) {
+	testcases := []struct {
+		n    int64
+		want string
+	}{
+		{n: 0, want: "0B"},                      // zero
+		{n: 42, want: "42B"},                    // within B range
+		{n: 1023, want: "1023B"},                // just below the KB boundary
+		{n: 1024, want: "1.0KB"},                // exactly the KB boundary
+		{n: 512 * 1024, want: "512.0KB"},        // within KB range
+		{n: 1024 * 1024, want: "1.0MB"},         // exactly the MB boundary
+		{n: 180 * 1024 * 1024, want: "180.0MB"}, // within MB range
+		{n: 1024 * 1024 * 1024, want: "1.0GB"},  // exactly the GB boundary
+		{n: 4509715660, want: "4.2GB"},          // within GB range
+	}
+
+	for _, tc := range testcases {
+		assert.Equal(t, tc.want, formatBytes(tc.n))
+	}
+}
+
+// captureLogger is a log.Logger test double that records every Infof line so a test
+// can assert the escalation-panel shape without touching real logging output.
+type captureLogger struct {
+	mu        sync.Mutex
+	infoLines []string
+}
+
+func (l *captureLogger) Info(msg string) {}
+func (l *captureLogger) Infof(format string, v ...interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.infoLines = append(l.infoLines, fmt.Sprintf(format, v...))
+}
+func (l *captureLogger) Warn(msg string)                        {}
+func (l *captureLogger) Warnf(format string, v ...interface{})  {}
+func (l *captureLogger) Error(msg string)                       {}
+func (l *captureLogger) Errorf(format string, v ...interface{}) {}
+
+func (l *captureLogger) lines() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]string, len(l.infoLines))
+	copy(out, l.infoLines)
+	return out
+}
+
+// fakeConn is a minimal db.Conn used to exercise the churn init-error / climax /
+// ctx.Done branches without a real database. Only Exec is invoked.
+type fakeConn struct {
+	execErr      error // returned once execOKBefore successful Execs have happened
+	execOKBefore int   // number of successful Execs before execErr is returned
+	mu           sync.Mutex
+	calls        int
+}
+
+func (f *fakeConn) Begin(ctx context.Context) (db.Tx, error) { panic("not implemented") }
+func (f *fakeConn) Exec(ctx context.Context, sql string, args ...interface{}) (int64, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.calls > f.execOKBefore {
+		return 0, "", f.execErr
+	}
+	return 0, "UPDATE", nil
+}
+func (f *fakeConn) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	panic("not implemented")
+}
+func (f *fakeConn) Close() error { return nil }
+
+func Test_runChurn_firstExecError(t *testing.T) {
+	// The first Exec error with the shared counter still at 0 is a setup defect and is
+	// returned as an init error, never masquerading as a climax. The returned error must
+	// also be sanitized — a DSN-carrying pgx error must not leak through.
+	conn := &fakeConn{execErr: fmt.Errorf("dial tcp failed host=SENTINEL_SECRET refused"), execOKBefore: 0}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var counter atomic.Int64
+	config := Config{Conninfo: "x", Rate: 0, Rows: 5, PayloadBytes: 8, ReportInterval: time.Second, Jobs: 1}
+
+	err := runChurn(ctx, conn, log.NewDefaultLogger("error"), config, "UPDATE t SET payload=$1 WHERE id=$2", 1, 5, &counter)
+	assert.Error(t, err)
+	assert.NotContains(t, err.Error(), "SENTINEL_SECRET", "init error must be sanitized")
+	assert.Equal(t, int64(0), counter.Load())
+}
+
+func Test_runChurn_climaxAfterSuccess(t *testing.T) {
+	// An Exec error under a live ctx with counter>0 is the climax — runChurn logs the
+	// climax line and returns nil.
+	conn := &fakeConn{execErr: fmt.Errorf("connection reset by peer"), execOKBefore: 3}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	logger := &captureLogger{}
+	var counter atomic.Int64
+	config := Config{Conninfo: "x", Rate: 0, Rows: 5, PayloadBytes: 8, ReportInterval: time.Second, Jobs: 1}
+
+	err := runChurn(ctx, conn, logger, config, "UPDATE t SET payload=$1 WHERE id=$2", 1, 5, &counter)
+	assert.NoError(t, err)
+	// 3 successful UPDATEs × 8 bytes.
+	assert.Equal(t, int64(24), counter.Load())
+	// The climax side-effect (explicit in the TDD anchor) must actually be logged.
+	assert.Contains(t, strings.Join(logger.lines(), "\n"), "connection lost", "climax line must be logged")
+}
+
+func Test_runChurn_ctxDoneClean(t *testing.T) {
+	// A cancelled ctx must yield a clean return nil — the error is not masked into a failure.
+	conn := &fakeConn{execErr: fmt.Errorf("context canceled"), execOKBefore: 0}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var counter atomic.Int64
+	config := Config{Conninfo: "x", Rate: 0, Rows: 5, PayloadBytes: 8, ReportInterval: time.Second, Jobs: 1}
+
+	err := runChurn(ctx, conn, log.NewDefaultLogger("error"), config, "UPDATE t SET payload=$1 WHERE id=$2", 1, 5, &counter)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(0), counter.Load())
+}
+
+func Test_runChurn_twoWorkersConcurrentFirstFailure(t *testing.T) {
+	// Two workers each fail their very first Exec before any success anywhere (shared
+	// counter == 0) => both return init errors (the shared-counter aggregation rule).
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var counter atomic.Int64
+	config := Config{Conninfo: "x", Rate: 0, Rows: 4, PayloadBytes: 8, ReportInterval: time.Second, Jobs: 2}
+	logger := log.NewDefaultLogger("error")
+	conn1 := &fakeConn{execErr: fmt.Errorf("permission denied"), execOKBefore: 0}
+	conn2 := &fakeConn{execErr: fmt.Errorf("permission denied"), execOKBefore: 0}
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		errs[0] = runChurn(ctx, conn1, logger, config, "UPDATE t SET payload=$1 WHERE id=$2", 1, 2, &counter)
+	}()
+	go func() {
+		defer wg.Done()
+		errs[1] = runChurn(ctx, conn2, logger, config, "UPDATE t SET payload=$1 WHERE id=$2", 3, 4, &counter)
+	}()
+	wg.Wait()
+
+	assert.Error(t, errs[0])
+	assert.Error(t, errs[1])
+	assert.Equal(t, int64(0), counter.Load())
+}
+
+func Test_runChurn_churnsWithinRange(t *testing.T) {
+	// A worker must only UPDATE ids inside its disjoint [lo, hi] sub-range (the
+	// anti-self-defeat guarantee), cycling within the range. Bounded by iteration
+	// count (not wall-clock): the conn cancels ctx after stopAfter Execs.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rec := &recordingConn{stopAfter: 50, cancel: cancel}
+
+	var counter atomic.Int64
+	config := Config{Conninfo: "x", Rate: 0, Rows: 10, PayloadBytes: 8, ReportInterval: time.Second, Jobs: 2}
+
+	// Worker owns ids 6..10; 50 Execs over a 5-wide range cover every id at least once.
+	_ = runChurn(ctx, rec, log.NewDefaultLogger("error"), config, "UPDATE t SET payload=$1 WHERE id=$2", 6, 10, &counter)
+
+	ids := rec.seenIDs()
+	assert.Len(t, ids, 5, "worker must cover exactly its 5-id range")
+	for id := range ids {
+		assert.GreaterOrEqual(t, id, 6, "id must not fall below the worker's range")
+		assert.LessOrEqual(t, id, 10, "id must not exceed the worker's range")
+	}
+}
+
+// recordingConn is a db.Conn double that records the id bind argument of every UPDATE
+// so a test can assert a worker stays within its disjoint range. After stopAfter Execs
+// it cancels the context, bounding the rate.Inf churn loop without relying on wall-clock.
+type recordingConn struct {
+	mu        sync.Mutex
+	ids       map[int]struct{}
+	calls     int
+	stopAfter int
+	cancel    context.CancelFunc
+}
+
+func (c *recordingConn) Begin(ctx context.Context) (db.Tx, error) { panic("not implemented") }
+func (c *recordingConn) Exec(ctx context.Context, sql string, args ...interface{}) (int64, string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ids == nil {
+		c.ids = make(map[int]struct{})
+	}
+	if len(args) == 2 {
+		if id, ok := args[1].(int); ok {
+			c.ids[id] = struct{}{}
+		}
+	}
+	c.calls++
+	if c.stopAfter > 0 && c.calls >= c.stopAfter && c.cancel != nil {
+		c.cancel()
+	}
+	return 0, "UPDATE", nil
+}
+func (c *recordingConn) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	panic("not implemented")
+}
+func (c *recordingConn) Close() error { return nil }
+
+func (c *recordingConn) seenIDs() map[int]struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make(map[int]struct{}, len(c.ids))
+	for k := range c.ids {
+		out[k] = struct{}{}
+	}
+	return out
+}
+
+func Test_runReporter(t *testing.T) {
+	// runReporter prints the escalation panel each ReportInterval, reading only the
+	// atomic counter. Drive it for a tick against a controlled counter and assert the
+	// panel shape, human-readable formatting (formatBytes) and the counter-delta rate.
+	const interval = 50 * time.Millisecond
+	logger := &captureLogger{}
+	w := &workload{
+		config: Config{ReportInterval: interval},
+		logger: logger,
+	}
+
+	var counter atomic.Int64
+	// 2 MiB written before the first tick: rate = 2 MiB / 0.05s = 40 MiB/s.
+	counter.Store(2 * 1024 * 1024)
+
+	done := make(chan struct{})
+	reporterDone := make(chan struct{})
+	go func() {
+		w.runReporter(context.Background(), done, time.Now(), &counter)
+		close(reporterDone)
+	}()
+
+	time.Sleep(interval + 20*time.Millisecond)
+	close(done)
+	<-reporterDone
+
+	lines := logger.lines()
+	assert.GreaterOrEqual(t, len(lines), 1, "at least one panel line must be printed")
+
+	first := lines[0]
+	assert.Contains(t, first, "wal-flood: payload-written=2.0MB", "payload-written must be human-readable from formatBytes")
+	assert.Contains(t, first, "rate=40.0MB/s", "rate must be the counter delta over the interval, human-readable")
+	assert.Contains(t, first, "elapsed=", "panel must report elapsed time")
+}
+
+// -----------------------------------------------------------------------------
+// Integration tests (testcontainers, real PostgreSQL via db.TestConninfo).
+//
+// They assert the OBSERVABLE proxies of the workload against a live server. The
+// disk-full / PANIC catastrophe path is deliberately NOT covered here: it is
+// environment-dependent and destructive — a manual stand demo, like slot-bloat.
+// All state waits use bounded condition-polling, never a fixed sleep as the wait
+// mechanism (pg_stat_* is updated asynchronously; a fixed sleep is flaky or slow).
+// -----------------------------------------------------------------------------
+
+func TestWorkload_Run_counterClimbs(t *testing.T) {
+	// With Jobs>1 the shared payload counter climbs across workers; the self-report
+	// panel reflects it. Assert payload-written strictly grows between panels (live DB).
+	logger := &captureLogger{}
+	config := Config{
+		Conninfo:       db.TestConninfo,
+		Rate:           0,
+		Rows:           100,
+		PayloadBytes:   1024,
+		ReportInterval: 100 * time.Millisecond,
+		Jobs:           3,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w, err := NewWorkload(config, logger)
+	assert.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+
+	// Poll for at least two panels whose payload-written has grown.
+	var panels []float64
+	for i := 0; i < 200; i++ {
+		panels = panels[:0]
+		for _, l := range logger.lines() {
+			if strings.Contains(l, "payload-written=") {
+				panels = append(panels, parsePayloadBytes(t, l))
+			}
+		}
+		if len(panels) >= 2 && panels[len(panels)-1] > panels[0] {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	assert.NoError(t, <-done)
+
+	assert.GreaterOrEqual(t, len(panels), 2, "at least two escalation panels must be printed")
+	assert.Greater(t, panels[len(panels)-1], panels[0], "payload-written must climb across panels")
+}
+
+func TestWorkload_Run_seedRowCountFlatHeap(t *testing.T) {
+	// The payload counter grows during churn while the heap stays flat: count(*)
+	// remains == Rows across the run (only WAL grows, not the table).
+	const rows = 12
+
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
+	purgeWalFlood(t, obs) // clean slate so discover cannot pick up an orphan table
+
+	config := Config{
+		Conninfo:       db.TestConninfo,
+		Rate:           100,
+		Rows:           rows,
+		PayloadBytes:   128,
+		ReportInterval: 100 * time.Millisecond,
+		Jobs:           3,
+	}
+
+	// Cancel explicitly after the assertions (not a fixed deadline) so the workload
+	// cannot time out and drop the table while the observer is still polling.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w, err := NewWorkload(config, log.NewDefaultLogger("error"))
+	assert.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+
+	// Wait until the seed table appears, then assert flat heap mid-run.
+	var table string
+	for i := 0; i < 50; i++ {
+		table = discoverWalFloodTable(t, obs)
+		if table != "" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	assert.NotEmpty(t, table, "seed table must appear")
+
+	tableIdent := "\"" + table + "\""
+	assert.Equal(t, rows, countRows(t, obs, tableIdent))
+
+	// Poll n_tup_upd > 0: the churn loop must actually have issued UPDATEs — a flat
+	// heap alone would also pass with zero writes. Stats are async, so poll.
+	var upd int64
+	for i := 0; i < 50; i++ {
+		upd = tupUpd(t, obs, table)
+		if upd > 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	assert.Greater(t, upd, int64(0), "the churn loop must have issued UPDATEs against the seed table")
+
+	// Re-check the row count is still Rows (flat heap) after churn has run.
+	assert.Equal(t, rows, countRows(t, obs, tableIdent))
+
+	cancel()
+	assert.NoError(t, <-done)
+}
+
+func TestWorkload_Run_jobsHonored(t *testing.T) {
+	// With Jobs=N, at least N noisia backends are concurrently active mid-run. This is
+	// the central new test vs slot-bloat: it holds INDEPENDENT of the host CPU count
+	// because each worker owns its own db.Connect (Decision 1) — do NOT "simplify" the
+	// engine into a shared pool, whose default max_conns would cap this below Jobs.
+	const jobs = 3
+	config := Config{
+		Conninfo:       db.TestConninfo,
+		Rate:           50,
+		Rows:           100,
+		PayloadBytes:   256,
+		ReportInterval: 200 * time.Millisecond,
+		Jobs:           jobs,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w, err := NewWorkload(config, log.NewDefaultLogger("error"))
+	assert.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
+
+	// Poll until at least Jobs noisia backends are concurrently active. The observer
+	// conn does not set application_name, so it is not counted.
+	var n int
+	for i := 0; i < 150; i++ {
+		n = countNoisiaBackends(t, obs)
+		if n >= jobs {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	assert.GreaterOrEqual(t, n, jobs, "at least Jobs worker backends must be concurrently active, independent of host CPU")
+
+	cancel()
+	assert.NoError(t, <-done)
+}
+
+func TestWorkload_Run_cleanupOnExit(t *testing.T) {
+	// Graceful exit drops the seed table by default.
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
+	purgeWalFlood(t, obs) // start from a clean slate, independent of test order
+
+	config := Config{
+		Conninfo:       db.TestConninfo,
+		Rate:           50,
+		Rows:           10,
+		PayloadBytes:   64,
+		ReportInterval: 200 * time.Millisecond,
+		Jobs:           2,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	defer cancel()
+
+	w, err := NewWorkload(config, log.NewDefaultLogger("error"))
+	assert.NoError(t, err)
+	assert.NoError(t, w.Run(ctx))
+
+	assert.Empty(t, discoverWalFloodTable(t, obs), "seed table must be dropped on graceful exit")
+}
+
+func TestWorkload_cleanup_selfSufficient(t *testing.T) {
+	// cleanup must not depend on any live workload connection: it opens its OWN fresh
+	// connection. Prove it deterministically — manually create a matching table (the name
+	// the workload uses), then invoke cleanup directly with no workload running, and
+	// assert it is gone. Catches a conn-reusing regression every run (ADR-002-2).
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
+	purgeWalFlood(t, obs)
+	defer purgeWalFlood(t, obs)
+
+	base := "noisia_walflood_" + randomSuffix(8)
+	tableIdent := "\"" + base + "\""
+
+	_, _, err = obs.Exec(context.Background(), "CREATE TABLE "+tableIdent+" (id int PRIMARY KEY, payload bytea)")
+	assert.NoError(t, err)
+	assert.NotEmpty(t, discoverWalFloodTable(t, obs), "table must exist before cleanup")
+
+	gw, err := NewWorkload(Config{
+		Conninfo:       db.TestConninfo,
+		Rate:           50,
+		Rows:           5,
+		PayloadBytes:   64,
+		ReportInterval: 200 * time.Millisecond,
+		Jobs:           1,
+	}, log.NewDefaultLogger("error"))
+	assert.NoError(t, err)
+	gw.(*workload).cleanup(tableIdent)
+
+	assert.Empty(t, discoverWalFloodTable(t, obs), "table must be dropped by self-sufficient cleanup")
+}
+
+func TestWorkload_Run_rowsLessThanJobs(t *testing.T) {
+	// Rows < Jobs is rejected by validate() before any worker is spawned (no panic /
+	// deadlock path to the fan-out; Decision 2 removes the empty-tail-range edge).
+	_, err := NewWorkload(Config{
+		Conninfo:       db.TestConninfo,
+		Rate:           0,
+		Rows:           2,
+		PayloadBytes:   64,
+		ReportInterval: 200 * time.Millisecond,
+		Jobs:           3,
+	}, log.NewDefaultLogger("error"))
+	assert.Error(t, err)
+}
+
+// parsePayloadBytes extracts the payload-written value from a panel line and returns
+// it as bytes, so a test can compare growth across panels regardless of unit. Panel
+// shape: "wal-flood: payload-written=<n><unit> rate=...".
+func parsePayloadBytes(t *testing.T, line string) float64 {
+	t.Helper()
+	const marker = "payload-written="
+	i := strings.Index(line, marker)
+	assert.GreaterOrEqual(t, i, 0, "line must contain a payload-written field")
+	s := line[i+len(marker):]
+	if j := strings.IndexByte(s, ' '); j >= 0 {
+		s = s[:j]
+	}
+	s = strings.TrimSuffix(s, "B")
+	mult := 1.0
+	switch {
+	case strings.HasSuffix(s, "K"):
+		mult, s = 1024, strings.TrimSuffix(s, "K")
+	case strings.HasSuffix(s, "M"):
+		mult, s = 1024*1024, strings.TrimSuffix(s, "M")
+	case strings.HasSuffix(s, "G"):
+		mult, s = 1024*1024*1024, strings.TrimSuffix(s, "G")
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	assert.NoError(t, err)
+	return v * mult
+}
+
+// discoverWalFloodTable returns the single noisia_walflood_% table name present in the
+// target DB, or "" if none. Used by integration tests since the suffix is random.
+func discoverWalFloodTable(t *testing.T, conn db.Conn) string {
+	t.Helper()
+	rows, err := conn.Query(context.Background(),
+		"SELECT tablename FROM pg_tables WHERE tablename LIKE 'noisia_walflood_%'")
+	assert.NoError(t, err)
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		assert.NoError(t, rows.Scan(&name))
+		names = append(names, name)
+	}
+	assert.NoError(t, rows.Err())
+	// At most one wal-flood table should exist at a time; more than one means a prior
+	// test orphaned its table, which would mask a real cleanup regression.
+	assert.LessOrEqual(t, len(names), 1, "at most one wal-flood table should exist at a time")
+	if len(names) == 0 {
+		return ""
+	}
+	return names[0]
+}
+
+// countRows returns count(*) for the given table identifier.
+func countRows(t *testing.T, conn db.Conn, tableIdent string) int {
+	t.Helper()
+	rows, err := conn.Query(context.Background(), "SELECT count(*) FROM "+tableIdent)
+	assert.NoError(t, err)
+	defer rows.Close()
+	var n int
+	for rows.Next() {
+		assert.NoError(t, rows.Scan(&n))
+	}
+	assert.NoError(t, rows.Err())
+	return n
+}
+
+// tupUpd returns n_tup_upd for the given relation from pg_stat_user_tables. Used to
+// prove the churn loop actually wrote (stats are updated asynchronously).
+func tupUpd(t *testing.T, conn db.Conn, relname string) int64 {
+	t.Helper()
+	rows, err := conn.Query(context.Background(),
+		"SELECT coalesce(n_tup_upd, 0) FROM pg_stat_user_tables WHERE relname = $1", relname)
+	assert.NoError(t, err)
+	defer rows.Close()
+	var n int64
+	for rows.Next() {
+		assert.NoError(t, rows.Scan(&n))
+	}
+	assert.NoError(t, rows.Err())
+	return n
+}
+
+// countNoisiaBackends returns the number of backends with application_name='noisia'.
+func countNoisiaBackends(t *testing.T, conn db.Conn) int {
+	t.Helper()
+	rows, err := conn.Query(context.Background(),
+		"SELECT count(*) FROM pg_stat_activity WHERE application_name = 'noisia'")
+	assert.NoError(t, err)
+	defer rows.Close()
+	var n int
+	for rows.Next() {
+		assert.NoError(t, rows.Scan(&n))
+	}
+	assert.NoError(t, rows.Err())
+	return n
+}
+
+// purgeWalFlood drops every leftover noisia_walflood_% table so a test starts from a
+// clean slate, independent of test order. wal-flood has no replication slots to purge.
+func purgeWalFlood(t *testing.T, conn db.Conn) {
+	t.Helper()
+	rows, err := conn.Query(context.Background(),
+		"SELECT tablename FROM pg_tables WHERE tablename LIKE 'noisia_walflood_%'")
+	assert.NoError(t, err)
+	var names []string
+	for rows.Next() {
+		var n string
+		assert.NoError(t, rows.Scan(&n))
+		names = append(names, n)
+	}
+	rows.Close()
+	for _, n := range names {
+		_, _, _ = conn.Exec(context.Background(), "DROP TABLE IF EXISTS \""+n+"\"")
+	}
+}

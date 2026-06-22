@@ -73,7 +73,11 @@ Each entry below is sized to be expanded into a user-spec.
 - **Self-report:** WAL bytes generated, transactions/s, uptime.
 - **Symptoms to teach:** WAL volume spikes, archiver/replication pressure, IO saturation.
 - **Remediation discussion:** WAL tuning, batching, checkpoint configuration.
-- **Notes:** may merge with `checkpoint-storm` below.
+- **Notes:** kept separate from `checkpoint-storm` (different mechanism: fsync pressure vs raw WAL
+  volume); FPI/checkpoint-storm amplification is shown only as an observable side effect, not a mode.
+- **Status:** implemented (003-feat-wal-flood). `--jobs` parallel UPDATE-churn over disjoint ranges,
+  per-worker connection, no slot; self-reports `payload-written`. Verified by unit + testcontainers
+  integration tests; real disk-full is a manual stand demo (env-dependent), not CI.
 
 ## Priority 3 — CPU → 100%
 

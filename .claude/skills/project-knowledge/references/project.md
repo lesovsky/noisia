@@ -43,6 +43,7 @@ Each workload is an independent, separately-toggleable generator:
 - **fork connections** — run single short queries each in a fresh connection (excessive backend forking).
 - **backend-killer** — a single session leaks prepared statements (server-side plan-cache growth) until the backend is OOM-killed and the postmaster restarts the whole instance.
 - **slot-bloat** — a single un-consumed physical replication slot pins WAL while UPDATE churn runs over a flat pre-seeded table, so `pg_wal` grows unbounded (checkpoints can't reclaim it) until the disk fills and the instance PANICs; self-reports its own payload bytes, not server WAL state.
+- **wal-flood** — `--jobs` parallel UPDATE-churn workers flood WAL on the primary over disjoint id ranges of one flat seed table (no slot, one connection per worker); reliably drives replication lag and, where recycle/archiving can't keep up, `pg_wal` growth toward disk-full (environment-dependent, not guaranteed). The generation-rate counterpart to slot-bloat's retention; self-reports payload bytes only.
 
 Usable both as a CLI binary and as an importable Go library (each workload package exposes a `Workload` with `NewWorkload` + `Run(ctx)`).
 
