@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -381,4 +382,339 @@ func Test_runReporter(t *testing.T) {
 	assert.Contains(t, first, "wal-flood: payload-written=2.0MB", "payload-written must be human-readable from formatBytes")
 	assert.Contains(t, first, "rate=40.0MB/s", "rate must be the counter delta over the interval, human-readable")
 	assert.Contains(t, first, "elapsed=", "panel must report elapsed time")
+}
+
+// -----------------------------------------------------------------------------
+// Integration tests (testcontainers, real PostgreSQL via db.TestConninfo).
+//
+// They assert the OBSERVABLE proxies of the workload against a live server. The
+// disk-full / PANIC catastrophe path is deliberately NOT covered here: it is
+// environment-dependent and destructive — a manual stand demo, like slot-bloat.
+// All state waits use bounded condition-polling, never a fixed sleep as the wait
+// mechanism (pg_stat_* is updated asynchronously; a fixed sleep is flaky or slow).
+// -----------------------------------------------------------------------------
+
+func TestWorkload_Run_counterClimbs(t *testing.T) {
+	// With Jobs>1 the shared payload counter climbs across workers; the self-report
+	// panel reflects it. Assert payload-written strictly grows between panels (live DB).
+	logger := &captureLogger{}
+	config := Config{
+		Conninfo:       db.TestConninfo,
+		Rate:           0,
+		Rows:           100,
+		PayloadBytes:   1024,
+		ReportInterval: 100 * time.Millisecond,
+		Jobs:           3,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w, err := NewWorkload(config, logger)
+	assert.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+
+	// Poll for at least two panels whose payload-written has grown.
+	var panels []float64
+	for i := 0; i < 200; i++ {
+		panels = panels[:0]
+		for _, l := range logger.lines() {
+			if strings.Contains(l, "payload-written=") {
+				panels = append(panels, parsePayloadBytes(t, l))
+			}
+		}
+		if len(panels) >= 2 && panels[len(panels)-1] > panels[0] {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	assert.NoError(t, <-done)
+
+	assert.GreaterOrEqual(t, len(panels), 2, "at least two escalation panels must be printed")
+	assert.Greater(t, panels[len(panels)-1], panels[0], "payload-written must climb across panels")
+}
+
+func TestWorkload_Run_seedRowCountFlatHeap(t *testing.T) {
+	// The payload counter grows during churn while the heap stays flat: count(*)
+	// remains == Rows across the run (only WAL grows, not the table).
+	const rows = 12
+	config := Config{
+		Conninfo:       db.TestConninfo,
+		Rate:           100,
+		Rows:           rows,
+		PayloadBytes:   128,
+		ReportInterval: 100 * time.Millisecond,
+		Jobs:           3,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+
+	w, err := NewWorkload(config, log.NewDefaultLogger("error"))
+	assert.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
+
+	// Wait until the seed table appears, then assert flat heap mid-run.
+	var table string
+	for i := 0; i < 50; i++ {
+		table = discoverWalFloodTable(t, obs)
+		if table != "" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	assert.NotEmpty(t, table, "seed table must appear")
+
+	tableIdent := "\"" + table + "\""
+	assert.Equal(t, rows, countRows(t, obs, tableIdent))
+
+	// Poll n_tup_upd > 0: the churn loop must actually have issued UPDATEs — a flat
+	// heap alone would also pass with zero writes. Stats are async, so poll.
+	var upd int64
+	for i := 0; i < 50; i++ {
+		upd = tupUpd(t, obs, table)
+		if upd > 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	assert.Greater(t, upd, int64(0), "the churn loop must have issued UPDATEs against the seed table")
+
+	// Re-check the row count is still Rows (flat heap) after churn has run.
+	assert.Equal(t, rows, countRows(t, obs, tableIdent))
+
+	cancel()
+	assert.NoError(t, <-done)
+}
+
+func TestWorkload_Run_jobsHonored(t *testing.T) {
+	// With Jobs=N, at least N noisia backends are concurrently active mid-run. This is
+	// the central new test vs slot-bloat: it holds INDEPENDENT of the host CPU count
+	// because each worker owns its own db.Connect (Decision 1) — do NOT "simplify" the
+	// engine into a shared pool, whose default max_conns would cap this below Jobs.
+	const jobs = 3
+	config := Config{
+		Conninfo:       db.TestConninfo,
+		Rate:           50,
+		Rows:           100,
+		PayloadBytes:   256,
+		ReportInterval: 200 * time.Millisecond,
+		Jobs:           jobs,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w, err := NewWorkload(config, log.NewDefaultLogger("error"))
+	assert.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
+
+	// Poll until at least Jobs noisia backends are concurrently active. The observer
+	// conn does not set application_name, so it is not counted.
+	var n int
+	for i := 0; i < 150; i++ {
+		n = countNoisiaBackends(t, obs)
+		if n >= jobs {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	assert.GreaterOrEqual(t, n, jobs, "at least Jobs worker backends must be concurrently active, independent of host CPU")
+
+	cancel()
+	assert.NoError(t, <-done)
+}
+
+func TestWorkload_Run_cleanupOnExit(t *testing.T) {
+	// Graceful exit drops the seed table by default.
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
+	purgeWalFlood(t, obs) // start from a clean slate, independent of test order
+
+	config := Config{
+		Conninfo:       db.TestConninfo,
+		Rate:           50,
+		Rows:           10,
+		PayloadBytes:   64,
+		ReportInterval: 200 * time.Millisecond,
+		Jobs:           2,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	defer cancel()
+
+	w, err := NewWorkload(config, log.NewDefaultLogger("error"))
+	assert.NoError(t, err)
+	assert.NoError(t, w.Run(ctx))
+
+	assert.Empty(t, discoverWalFloodTable(t, obs), "seed table must be dropped on graceful exit")
+}
+
+func TestWorkload_cleanup_selfSufficient(t *testing.T) {
+	// cleanup must not depend on any live workload connection: it opens its OWN fresh
+	// connection. Prove it deterministically — manually create a matching table (the name
+	// the workload uses), then invoke cleanup directly with no workload running, and
+	// assert it is gone. Catches a conn-reusing regression every run (ADR-002-2).
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
+	purgeWalFlood(t, obs)
+	defer purgeWalFlood(t, obs)
+
+	base := "noisia_walflood_" + randomSuffix(8)
+	tableIdent := "\"" + base + "\""
+
+	_, _, err = obs.Exec(context.Background(), "CREATE TABLE "+tableIdent+" (id int PRIMARY KEY, payload bytea)")
+	assert.NoError(t, err)
+	assert.NotEmpty(t, discoverWalFloodTable(t, obs), "table must exist before cleanup")
+
+	gw, err := NewWorkload(Config{
+		Conninfo:       db.TestConninfo,
+		Rate:           50,
+		Rows:           5,
+		PayloadBytes:   64,
+		ReportInterval: 200 * time.Millisecond,
+		Jobs:           1,
+	}, log.NewDefaultLogger("error"))
+	assert.NoError(t, err)
+	gw.(*workload).cleanup(tableIdent)
+
+	assert.Empty(t, discoverWalFloodTable(t, obs), "table must be dropped by self-sufficient cleanup")
+}
+
+func TestWorkload_Run_rowsLessThanJobs(t *testing.T) {
+	// Rows < Jobs is rejected by validate() before any worker is spawned (no panic /
+	// deadlock path to the fan-out; Decision 2 removes the empty-tail-range edge).
+	_, err := NewWorkload(Config{
+		Conninfo:       db.TestConninfo,
+		Rate:           0,
+		Rows:           2,
+		PayloadBytes:   64,
+		ReportInterval: 200 * time.Millisecond,
+		Jobs:           3,
+	}, log.NewDefaultLogger("error"))
+	assert.Error(t, err)
+}
+
+// parsePayloadBytes extracts the payload-written value from a panel line and returns
+// it as bytes, so a test can compare growth across panels regardless of unit. Panel
+// shape: "wal-flood: payload-written=<n><unit> rate=...".
+func parsePayloadBytes(t *testing.T, line string) float64 {
+	t.Helper()
+	const marker = "payload-written="
+	i := strings.Index(line, marker)
+	assert.GreaterOrEqual(t, i, 0, "line must contain a payload-written field")
+	s := line[i+len(marker):]
+	if j := strings.IndexByte(s, ' '); j >= 0 {
+		s = s[:j]
+	}
+	s = strings.TrimSuffix(s, "B")
+	mult := 1.0
+	switch {
+	case strings.HasSuffix(s, "K"):
+		mult, s = 1024, strings.TrimSuffix(s, "K")
+	case strings.HasSuffix(s, "M"):
+		mult, s = 1024*1024, strings.TrimSuffix(s, "M")
+	case strings.HasSuffix(s, "G"):
+		mult, s = 1024*1024*1024, strings.TrimSuffix(s, "G")
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	assert.NoError(t, err)
+	return v * mult
+}
+
+// discoverWalFloodTable returns the single noisia_walflood_% table name present in the
+// target DB, or "" if none. Used by integration tests since the suffix is random.
+func discoverWalFloodTable(t *testing.T, conn db.Conn) string {
+	t.Helper()
+	rows, err := conn.Query(context.Background(),
+		"SELECT tablename FROM pg_tables WHERE tablename LIKE 'noisia_walflood_%'")
+	assert.NoError(t, err)
+	defer rows.Close()
+	var name string
+	for rows.Next() {
+		assert.NoError(t, rows.Scan(&name))
+	}
+	assert.NoError(t, rows.Err())
+	return name
+}
+
+// countRows returns count(*) for the given table identifier.
+func countRows(t *testing.T, conn db.Conn, tableIdent string) int {
+	t.Helper()
+	rows, err := conn.Query(context.Background(), "SELECT count(*) FROM "+tableIdent)
+	assert.NoError(t, err)
+	defer rows.Close()
+	var n int
+	for rows.Next() {
+		assert.NoError(t, rows.Scan(&n))
+	}
+	assert.NoError(t, rows.Err())
+	return n
+}
+
+// tupUpd returns n_tup_upd for the given relation from pg_stat_user_tables. Used to
+// prove the churn loop actually wrote (stats are updated asynchronously).
+func tupUpd(t *testing.T, conn db.Conn, relname string) int64 {
+	t.Helper()
+	rows, err := conn.Query(context.Background(),
+		"SELECT coalesce(n_tup_upd, 0) FROM pg_stat_user_tables WHERE relname = $1", relname)
+	assert.NoError(t, err)
+	defer rows.Close()
+	var n int64
+	for rows.Next() {
+		assert.NoError(t, rows.Scan(&n))
+	}
+	assert.NoError(t, rows.Err())
+	return n
+}
+
+// countNoisiaBackends returns the number of backends with application_name='noisia'.
+func countNoisiaBackends(t *testing.T, conn db.Conn) int {
+	t.Helper()
+	rows, err := conn.Query(context.Background(),
+		"SELECT count(*) FROM pg_stat_activity WHERE application_name = 'noisia'")
+	assert.NoError(t, err)
+	defer rows.Close()
+	var n int
+	for rows.Next() {
+		assert.NoError(t, rows.Scan(&n))
+	}
+	assert.NoError(t, rows.Err())
+	return n
+}
+
+// purgeWalFlood drops every leftover noisia_walflood_% table so a test starts from a
+// clean slate, independent of test order. wal-flood has no replication slots to purge.
+func purgeWalFlood(t *testing.T, conn db.Conn) {
+	t.Helper()
+	rows, err := conn.Query(context.Background(),
+		"SELECT tablename FROM pg_tables WHERE tablename LIKE 'noisia_walflood_%'")
+	assert.NoError(t, err)
+	var names []string
+	for rows.Next() {
+		var n string
+		assert.NoError(t, rows.Scan(&n))
+		names = append(names, n)
+	}
+	rows.Close()
+	for _, n := range names {
+		_, _, _ = conn.Exec(context.Background(), "DROP TABLE IF EXISTS \""+n+"\"")
+	}
 }
