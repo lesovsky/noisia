@@ -127,6 +127,11 @@ the data never grows, checkpoints keep running — and a single forgotten slot s
 | `--slot-bloat.report-interval` | `NOISIA_SLOT_BLOAT_REPORT_INTERVAL` | duration | `1s` | How often the escalation panel is printed |
 | `--slot-bloat.keep-slot` | `NOISIA_SLOT_BLOAT_KEEP_SLOT` | bool | `false` | Keep the slot and table on graceful exit (do not drop) |
 
+`--slot-bloat.rows` sizes the churn row-set, not the WAL volume — a modest value is enough, since the
+WAL written per `UPDATE` is governed by `--slot-bloat.payload-bytes`. The initial seed table is roughly
+`rows × payload-bytes`, so very large `rows` create a large seed table/heap and a correspondingly slow
+startup (the workload logs `slot-bloat: seeding …` while it seeds, then `seeding done, starting churn`).
+
 The workload needs PostgreSQL 10+, the `REPLICATION` privilege (or superuser), `wal_level >= replica`
 (the default), and `CREATE` on a schema to seed its table. It opens one dedicated connection, creates a
 slot named `noisia_slotbloat_<random>` with `immediately_reserve := true`, seeds a table of the same name,

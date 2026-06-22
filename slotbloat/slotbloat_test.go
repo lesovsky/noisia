@@ -297,6 +297,57 @@ func TestWorkload_Run_slotCreated(t *testing.T) {
 	assert.NoError(t, <-done)
 }
 
+func TestWorkload_Run_seedPhaseFeedback(t *testing.T) {
+	// During the (potentially long) seed phase there must be explicit feedback: a
+	// "seeding" line before prepare() and a "seeding done, starting churn" line after,
+	// both emitted before the first escalation panel — otherwise a large seed looks
+	// stuck (no output) while WAL grows on the server.
+	logger := &captureLogger{}
+	config := Config{
+		Conninfo:       db.TestConninfo,
+		Rate:           50,
+		Rows:           5,
+		PayloadBytes:   64,
+		ReportInterval: 200 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	w, err := NewWorkload(config, logger)
+	assert.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+
+	// Give Run time to seed and start churn (the first panel fires only after the
+	// report interval), then cancel.
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+	assert.NoError(t, <-done)
+
+	lines := logger.lines()
+
+	seedingIdx, seedingDoneIdx, firstPanelIdx := -1, -1, -1
+	for i, line := range lines {
+		switch {
+		case seedingIdx == -1 && strings.Contains(line, "slot-bloat: seeding ") && strings.Contains(line, "rows"):
+			seedingIdx = i
+		case seedingDoneIdx == -1 && strings.Contains(line, "slot-bloat: seeding done, starting churn"):
+			seedingDoneIdx = i
+		case firstPanelIdx == -1 && strings.Contains(line, "payload-written="):
+			firstPanelIdx = i
+		}
+	}
+
+	assert.NotEqual(t, -1, seedingIdx, "a seeding line must be emitted")
+	assert.NotEqual(t, -1, seedingDoneIdx, "a seeding-done line must be emitted")
+	assert.Less(t, seedingIdx, seedingDoneIdx, "seeding line must precede seeding-done line")
+	if firstPanelIdx != -1 {
+		assert.Less(t, seedingDoneIdx, firstPanelIdx, "seed feedback must precede the first panel")
+	}
+}
+
 func TestWorkload_Run_seedRowCount(t *testing.T) {
 	// After prepare() the seed table holds exactly N rows.
 	const rows = 7
