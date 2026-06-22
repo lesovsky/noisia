@@ -271,23 +271,29 @@ func TestWorkload_Run_slotCreated(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- w.Run(ctx) }()
 
-	// Give Run time to create the slot and seed the table.
-	time.Sleep(700 * time.Millisecond)
-
 	obs, err := db.Connect(context.Background(), db.TestConninfo)
 	assert.NoError(t, err)
-	rows, err := obs.Query(context.Background(),
-		"SELECT slot_type, restart_lsn IS NOT NULL FROM pg_replication_slots WHERE slot_name LIKE 'noisia_slotbloat_%'")
-	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
+
+	// Poll until the slot row appears (bounded), then assert its shape. A fixed sleep
+	// here is brittle: a slow CREATE under -race/CI would race the assertion.
 	var slotType string
 	var restartLSNSet bool
 	found := false
-	for rows.Next() {
-		found = true
-		assert.NoError(t, rows.Scan(&slotType, &restartLSNSet))
+	for i := 0; i < 100; i++ {
+		rows, qerr := obs.Query(context.Background(),
+			"SELECT slot_type, restart_lsn IS NOT NULL FROM pg_replication_slots WHERE slot_name LIKE 'noisia_slotbloat_%'")
+		assert.NoError(t, qerr)
+		for rows.Next() {
+			found = true
+			assert.NoError(t, rows.Scan(&slotType, &restartLSNSet))
+		}
+		rows.Close()
+		if found {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	rows.Close()
-	_ = obs.Close()
 
 	assert.True(t, found, "slot must exist mid-run")
 	assert.Equal(t, "physical", slotType)
@@ -311,7 +317,8 @@ func TestWorkload_Run_seedPhaseFeedback(t *testing.T) {
 		ReportInterval: 200 * time.Millisecond,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	// No deadline: cancel happens explicitly once the first panel line is observed.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	w, err := NewWorkload(config, logger)
@@ -320,11 +327,26 @@ func TestWorkload_Run_seedPhaseFeedback(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- w.Run(ctx) }()
 
-	// Give Run time to seed and start churn (the first panel fires only after the
-	// report interval), then cancel.
-	time.Sleep(300 * time.Millisecond)
+	// Poll the capturing logger until the first escalation panel (payload-written=)
+	// appears, then cancel. This makes the "seed feedback precedes the first panel"
+	// ordering assertion unconditional: with a fixed sleep the panel could race the
+	// sleep deadline and be absent, silently skipping the strongest assertion.
+	firstPanelSeen := false
+	for i := 0; i < 200; i++ {
+		for _, line := range logger.lines() {
+			if strings.Contains(line, "payload-written=") {
+				firstPanelSeen = true
+				break
+			}
+		}
+		if firstPanelSeen {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	cancel()
 	assert.NoError(t, <-done)
+	assert.True(t, firstPanelSeen, "the first escalation panel must be emitted")
 
 	lines := logger.lines()
 
@@ -342,10 +364,9 @@ func TestWorkload_Run_seedPhaseFeedback(t *testing.T) {
 
 	assert.NotEqual(t, -1, seedingIdx, "a seeding line must be emitted")
 	assert.NotEqual(t, -1, seedingDoneIdx, "a seeding-done line must be emitted")
+	assert.NotEqual(t, -1, firstPanelIdx, "the first escalation panel must be emitted")
 	assert.Less(t, seedingIdx, seedingDoneIdx, "seeding line must precede seeding-done line")
-	if firstPanelIdx != -1 {
-		assert.Less(t, seedingDoneIdx, firstPanelIdx, "seed feedback must precede the first panel")
-	}
+	assert.Less(t, seedingDoneIdx, firstPanelIdx, "seed feedback must precede the first panel")
 }
 
 func TestWorkload_Run_seedRowCount(t *testing.T) {
@@ -516,6 +537,49 @@ func TestWorkload_Run_cleanupDropsAfterMidChurnCancel(t *testing.T) {
 	assert.Empty(t, discoverSlotBloatTable(t, obs), "table must be dropped even after mid-churn cancel")
 }
 
+func TestWorkload_cleanup_selfSufficient(t *testing.T) {
+	// cleanup must not depend on any live workload connection: it opens its OWN fresh
+	// connection. Prove this deterministically — manually create a physical slot and a
+	// matching table (the names the workload uses), then invoke cleanup directly with
+	// no workload running, and assert BOTH are gone. This catches a conn-reusing
+	// regression every run, unlike the mid-churn-cancel test which can spuriously pass.
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
+	purgeSlotBloat(t, obs) // clean slate, independent of test order
+	defer purgeSlotBloat(t, obs)
+
+	// Mirror the workload's naming: slotName = base, tableIdent = quoted base.
+	base := "noisia_slotbloat_" + randomSuffix(8)
+	slotName := base
+	tableIdent := "\"" + base + "\""
+
+	// Manually create the slot and table over the observer conn (which we then leave
+	// open — cleanup must succeed without it).
+	_, _, err = obs.Exec(context.Background(), "SELECT pg_create_physical_replication_slot($1, true)", slotName)
+	assert.NoError(t, err)
+	_, _, err = obs.Exec(context.Background(), "CREATE TABLE "+tableIdent+" (id int PRIMARY KEY, payload bytea)")
+	assert.NoError(t, err)
+	assert.Equal(t, 1, countSlots(t, obs), "slot must exist before cleanup")
+	assert.NotEmpty(t, discoverSlotBloatTable(t, obs), "table must exist before cleanup")
+
+	// Build the workload with KeepSlot=false (mirrors how other tests construct it) and
+	// invoke cleanup directly — it opens its own connection, no live workload involved.
+	gw, err := NewWorkload(Config{
+		Conninfo:       db.TestConninfo,
+		Rate:           50,
+		Rows:           5,
+		PayloadBytes:   64,
+		ReportInterval: 200 * time.Millisecond,
+		KeepSlot:       false,
+	}, log.NewDefaultLogger("error"))
+	assert.NoError(t, err)
+	gw.(*workload).cleanup(slotName, tableIdent)
+
+	assert.Equal(t, 0, countSlots(t, obs), "slot must be dropped by self-sufficient cleanup")
+	assert.Empty(t, discoverSlotBloatTable(t, obs), "table must be dropped by self-sufficient cleanup")
+}
+
 func TestWorkload_Run_keepSlot(t *testing.T) {
 	// With KeepSlot the slot and table survive graceful exit.
 	obs, err := db.Connect(context.Background(), db.TestConninfo)
@@ -566,19 +630,27 @@ func TestWorkload_Run_applicationName(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- w.Run(ctx) }()
 
-	time.Sleep(500 * time.Millisecond)
-
 	obs, err := db.Connect(context.Background(), db.TestConninfo)
 	assert.NoError(t, err)
-	rows, err := obs.Query(context.Background(),
-		"SELECT count(*) FROM pg_stat_activity WHERE application_name = 'noisia'")
-	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
+
+	// Poll until a noisia backend appears (bounded), instead of a fixed sleep that
+	// races the connection's SET application_name under -race/CI.
 	var n int
-	for rows.Next() {
-		assert.NoError(t, rows.Scan(&n))
+	for i := 0; i < 100; i++ {
+		rows, qerr := obs.Query(context.Background(),
+			"SELECT count(*) FROM pg_stat_activity WHERE application_name = 'noisia'")
+		assert.NoError(t, qerr)
+		n = 0
+		for rows.Next() {
+			assert.NoError(t, rows.Scan(&n))
+		}
+		rows.Close()
+		if n >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	rows.Close()
-	_ = obs.Close()
 	assert.GreaterOrEqual(t, n, 1, "the workload connection must report application_name=noisia")
 
 	cancel()
