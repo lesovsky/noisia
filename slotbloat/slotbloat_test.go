@@ -416,6 +416,55 @@ func TestWorkload_Run_cleanupDropsByDefault(t *testing.T) {
 	assert.Empty(t, discoverSlotBloatTable(t, obs), "table must be dropped")
 }
 
+func TestWorkload_Run_cleanupDropsAfterMidChurnCancel(t *testing.T) {
+	// On Ctrl+C landing mid-UPDATE (unlimited rate), pgx aborts the in-flight query
+	// and poisons the workload's single connection. Cleanup must still drop the slot
+	// and table — it must not depend on the (now dead) workload conn. This reproduces
+	// the stand bug where the slot was orphaned after a mid-churn cancel.
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
+	purgeSlotBloat(t, obs) // start from a clean slate, independent of test order
+	defer purgeSlotBloat(t, obs)
+
+	config := Config{
+		Conninfo:       db.TestConninfo,
+		Rate:           0, // unlimited: the cancel lands mid-UPDATE and poisons the conn
+		Rows:           5,
+		PayloadBytes:   1024,
+		ReportInterval: 200 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w, err := NewWorkload(config, log.NewDefaultLogger("error"))
+	assert.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+
+	// Wait until the slot and table actually exist, so churn is active.
+	var table string
+	for i := 0; i < 100; i++ {
+		table = discoverSlotBloatTable(t, obs)
+		if table != "" && countSlots(t, obs) == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	assert.NotEmpty(t, table, "seed table must appear before cancel")
+	assert.Equal(t, 1, countSlots(t, obs), "slot must exist before cancel")
+
+	// Cancel while churn is hammering: the cancel lands mid-UPDATE and poisons the
+	// workload conn.
+	cancel()
+	<-done
+
+	assert.Equal(t, 0, countSlots(t, obs), "slot must be dropped even after mid-churn cancel")
+	assert.Empty(t, discoverSlotBloatTable(t, obs), "table must be dropped even after mid-churn cancel")
+}
+
 func TestWorkload_Run_keepSlot(t *testing.T) {
 	// With KeepSlot the slot and table survive graceful exit.
 	obs, err := db.Connect(context.Background(), db.TestConninfo)

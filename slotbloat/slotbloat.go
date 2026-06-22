@@ -129,7 +129,7 @@ func (w *workload) Run(ctx context.Context) error {
 	// Cleanup is registered right after a successful connect so the slot/table are
 	// dropped even if seeding fails. It runs on a fresh context.Background() because
 	// ctx is already cancelled at exit and a drop on a cancelled ctx would fail.
-	defer w.cleanup(conn, slotName, tableIdent)
+	defer w.cleanup(slotName, tableIdent)
 
 	// Create the un-consumed physical slot with immediately_reserve := true, which
 	// freezes restart_lsn at creation and pins WAL without any consumer.
@@ -286,13 +286,15 @@ func runChurn(ctx context.Context, conn db.Conn, logger log.Logger, config Confi
 
 // cleanup drops the slot and table on a fresh context.Background() (ctx is already
 // cancelled at exit), bounded by a short timeout so a hung (not dead) target cannot
-// block Run's return forever. By default both are dropped and "slot dropped" is
-// logged only on a fully successful drop; any failure is logged via Warnf with the
-// object names so nothing is silently orphaned — the slot-drop error is surfaced in
-// preference to the table-drop error since an orphaned slot is the more dangerous
-// leak. With KeepSlot both are kept and their names are logged. Every error passes
-// through sanitize.
-func (w *workload) cleanup(conn db.Conn, slotName, tableIdent string) {
+// block Run's return forever. It opens its OWN fresh connection rather than reusing
+// the workload conn: a Ctrl+C landing mid-UPDATE aborts the in-flight query and
+// poisons that conn, so a DROP over it would fail and orphan the slot. By default
+// both are dropped and "slot dropped" is logged only on a fully successful drop; any
+// failure is logged via Warnf with the object names so nothing is silently orphaned —
+// the slot-drop error is surfaced in preference to the table-drop error since an
+// orphaned slot is the more dangerous leak. With KeepSlot both are kept and their
+// names are logged. Every error passes through sanitize.
+func (w *workload) cleanup(slotName, tableIdent string) {
 	if w.config.KeepSlot {
 		w.logger.Infof("slot-bloat: slot kept: %s, table kept: %s — drop manually", slotName, tableIdent)
 		return
@@ -300,6 +302,16 @@ func (w *workload) cleanup(conn db.Conn, slotName, tableIdent string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
+	// Open a fresh connection: the workload conn may be dead after a mid-UPDATE cancel.
+	conn, err := db.Connect(ctx, w.config.Conninfo)
+	if err != nil {
+		// The target may be unreachable (e.g. in PANIC at real disk-full). Nothing was
+		// dropped — say so honestly so the slot is not silently assumed gone.
+		w.logger.Warnf("slot-bloat: cleanup failed for slot %s, table %s: %s — drop manually", slotName, tableIdent, sanitize(err))
+		return
+	}
+	defer func() { _ = conn.Close() }()
 
 	_, _, terr := conn.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tableIdent))
 	_, _, serr := conn.Exec(ctx, "SELECT pg_drop_replication_slot($1)", slotName)
