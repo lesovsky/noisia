@@ -6,3 +6,7 @@ tmp/*
 
 # SDLC working artifacts (kept local, not published)
 docs/features/
+docs/features-catalog.md
+docs/decisions-log.md
+docs/tech-debt.md
+docs/metrics/
