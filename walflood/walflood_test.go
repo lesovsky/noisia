@@ -55,6 +55,7 @@ func Test_partition(t *testing.T) {
 	}{
 		{1000, 4}, // even split
 		{10, 3},   // rows % jobs != 0 (remainder spread into tail ranges)
+		{11, 3},   // larger remainder (2) lands in the tail ranges
 		{5, 5},    // rows == jobs (one id per worker)
 		{100, 1},  // single worker owns the whole range
 		{7, 2},    // odd remainder
@@ -79,10 +80,13 @@ func Test_partition(t *testing.T) {
 
 func Test_randomSuffix(t *testing.T) {
 	re := regexp.MustCompile(`^[a-z0-9]+$`)
-	s := randomSuffix(8)
 
-	assert.Len(t, s, 8, "suffix must have the requested length")
-	assert.Regexp(t, re, s, "suffix must be an injection-safe identifier")
+	// Sample repeatedly: the charset guarantee must hold for every draw, not one.
+	for i := 0; i < 100; i++ {
+		s := randomSuffix(8)
+		assert.Len(t, s, 8, "suffix must have the requested length")
+		assert.Regexp(t, re, s, "suffix must be an injection-safe identifier")
+	}
 }
 
 func Test_sanitize(t *testing.T) {
