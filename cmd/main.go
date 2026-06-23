@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/alecthomas/kingpin/v2"
-	"github.com/alecthomas/units"
 	"github.com/lesovsky/noisia/log"
 	"os"
 	"os/signal"
@@ -127,7 +126,7 @@ func main() {
 		hotRows:                        *hotRows,
 		hotRowContentionReportInterval: *hotRowContentionReportInterval,
 		seqscanStorm:                   *seqscanStorm,
-		seqscanStormTableSize:          seqscanStormTableSizeBytes(*seqscanStormTableSize),
+		seqscanStormTableSize:          int64(*seqscanStormTableSize),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -161,13 +160,6 @@ func main() {
 	} else {
 		logger.Info("shutdown: done")
 	}
-}
-
-// seqscanStormTableSizeBytes converts the base-2 byte-size flag value (*units.Base2Bytes,
-// which is an int64 under the hood) into the plain int64 the config struct carries, so the
-// seqscanstorm package never has to import units.
-func seqscanStormTableSizeBytes(v units.Base2Bytes) int64 {
-	return int64(v)
 }
 
 func listenSignals() error {
