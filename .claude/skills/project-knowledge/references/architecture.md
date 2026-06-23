@@ -7,7 +7,7 @@ Technical architecture overview for AI agents. Helps agents understand HOW the s
 
 ## Tech Stack
 
-**Language:** Go (currently `go 1.19` in go.mod; target for the infra release is the current stable Go).
+**Language:** Go (`go 1.25.0`, toolchain `go1.25.11` in go.mod).
 - **Why:** single static binary, trivial cross-compilation, first-class PostgreSQL drivers.
 
 **PostgreSQL driver:** `github.com/jackc/pgx/v5`.
@@ -43,6 +43,7 @@ The repo is a Go module (`github.com/lesovsky/noisia`) with one package per work
 ├── backendkiller/     [workload: prepared-statement leak → backend OOM → instance restart]
 ├── slotbloat/         [workload: un-consumed physical replication slot pins WAL → pg_wal fills disk → instance PANIC]
 ├── walflood/          [workload: --jobs parallel UPDATE-churn workers over disjoint ranges flood WAL → replication lag / disk-full]
+├── hotrowcontention/  [workload: --jobs workers share K hot rows (inverse of walflood) → row-lock/buffer_content contention → CPU saturation / TPS collapse]
 ├── Dockerfile         [multi-stage build → scratch image]
 ├── Makefile           [dep/lint/test/build/docker targets]
 └── .github/workflows/ [CI: default.yml (lint+test), release.yml (test+docker+goreleaser)]

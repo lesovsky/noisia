@@ -88,6 +88,14 @@ Each entry below is sized to be expanded into a user-spec.
 - **Symptoms to teach:** CPU pegged, TPS collapses, yet no classic blocking is visible —
   the cost is contention, not waiting. Counterintuitive for juniors.
 - **Remediation discussion:** access pattern redesign, sharding hot rows, queue/batch.
+- **Status:** implemented (004-feat-hot-row-contention). `--jobs` workers SHARE `--hot-rows` foci
+  (worker `i` → row `(i mod hot_rows)+1`, default `hot_rows = max(1, jobs/10)`); autocommit UPDATE
+  serializes on row-lock / `LWLock:BufferContent`. The deliberate inverse of `wal-flood` (shares rows
+  instead of partitioning); `validate()` guards `jobs >= 2*hot_rows` (anti-self-defeat). Honest
+  contract: degradation (CPU saturation / TPS collapse observed externally), **not** instance death —
+  no PANIC/restart climax in the log. Verified by unit + testcontainers integration (incl. a
+  shared-contention test proving rows are shared under `>= jobs` live backends); real CPU saturation is
+  a manual stand demo, not CI.
 
 ### seqscan-storm
 - **Limit pushed:** CPU / IO via repeated full scans.
