@@ -10,6 +10,7 @@ import (
 	"github.com/lesovsky/noisia/idlexacts"
 	"github.com/lesovsky/noisia/log"
 	"github.com/lesovsky/noisia/rollbacks"
+	"github.com/lesovsky/noisia/seqscanstorm"
 	"github.com/lesovsky/noisia/slotbloat"
 	"github.com/lesovsky/noisia/tempfiles"
 	"github.com/lesovsky/noisia/terminate"
@@ -67,6 +68,8 @@ type config struct {
 	hotRowContention               bool
 	hotRows                        uint
 	hotRowContentionReportInterval time.Duration
+	seqscanStorm                   bool
+	seqscanStormTableSize          int64
 }
 
 func runApplication(ctx context.Context, c config, log log.Logger) error {
@@ -214,6 +217,18 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 			err := startHotRowContentionWorkload(ctx, c, log)
 			if err != nil {
 				log.Errorf("hot-row-contention workload failed: %s", err)
+			}
+			wg.Done()
+		}()
+	}
+
+	if c.seqscanStorm {
+		log.Info("start seqscan-storm workload")
+		wg.Add(1)
+		go func() {
+			err := startSeqscanStormWorkload(ctx, c, log)
+			if err != nil {
+				log.Errorf("seqscan-storm workload failed: %s", err)
 			}
 			wg.Done()
 		}()
@@ -410,6 +425,21 @@ func startHotRowContentionWorkload(ctx context.Context, c config, logger log.Log
 			Jobs:           c.jobs,
 			HotRows:        resolveHotRows(c.hotRows, c.jobs),
 			ReportInterval: c.hotRowContentionReportInterval,
+		}, logger,
+	)
+	if err != nil {
+		return err
+	}
+
+	return workload.Run(ctx)
+}
+
+func startSeqscanStormWorkload(ctx context.Context, c config, logger log.Logger) error {
+	workload, err := seqscanstorm.NewWorkload(
+		seqscanstorm.Config{
+			Conninfo:  c.postgresConninfo,
+			TableSize: c.seqscanStormTableSize,
+			Jobs:      c.jobs,
 		}, logger,
 	)
 	if err != nil {

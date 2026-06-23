@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/alecthomas/kingpin/v2"
+	"github.com/alecthomas/units"
 	"github.com/lesovsky/noisia/log"
 	"os"
 	"os/signal"
@@ -65,6 +66,8 @@ func main() {
 		hotRowContention               = kingpin.Flag("hot-row-contention", "Run hot-row-contention workload").Default("false").Envar("NOISIA_HOT_ROW_CONTENTION").Bool()
 		hotRows                        = kingpin.Flag("hot-rows", "Number of hot rows (K); 0 = auto default max(1, jobs/10)").Default("0").Envar("NOISIA_HOT_ROWS").Uint()
 		hotRowContentionReportInterval = kingpin.Flag("hot-row-contention.report-interval", "Escalation panel print cadence").Default("1s").Envar("NOISIA_HOT_ROW_CONTENTION_REPORT_INTERVAL").Duration()
+		seqscanStorm                   = kingpin.Flag("seqscan-storm", "Run seqscan-storm workload").Default("false").Envar("NOISIA_SEQSCAN_STORM").Bool()
+		seqscanStormTableSize          = kingpin.Flag("seqscan-storm.table-size", "Seed table size, base-2 (500MB = 500 MiB = 524288000 bytes; lowercase kB rejected). Large tables warm up via a full scan that can consume a short --duration budget — set --duration generously.").Default("500MB").Envar("NOISIA_SEQSCAN_STORM_TABLE_SIZE").Bytes()
 	)
 	kingpin.Parse()
 
@@ -123,6 +126,8 @@ func main() {
 		hotRowContention:               *hotRowContention,
 		hotRows:                        *hotRows,
 		hotRowContentionReportInterval: *hotRowContentionReportInterval,
+		seqscanStorm:                   *seqscanStorm,
+		seqscanStormTableSize:          seqscanStormTableSizeBytes(*seqscanStormTableSize),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -156,6 +161,13 @@ func main() {
 	} else {
 		logger.Info("shutdown: done")
 	}
+}
+
+// seqscanStormTableSizeBytes converts the base-2 byte-size flag value (*units.Base2Bytes,
+// which is an int64 under the hood) into the plain int64 the config struct carries, so the
+// seqscanstorm package never has to import units.
+func seqscanStormTableSizeBytes(v units.Base2Bytes) int64 {
+	return int64(v)
 }
 
 func listenSignals() error {
