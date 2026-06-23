@@ -36,10 +36,12 @@ import (
 	"github.com/lesovsky/noisia/log"
 )
 
-// reportInterval is the fixed escalation-panel print cadence. Unlike the sibling
-// workloads, seqscan-storm's Config exposes no ReportInterval field (by design — the
-// panel cadence is not a teaching knob), so the interval is a package constant.
-const reportInterval = time.Second
+// reportInterval is the escalation-panel print cadence. Unlike the sibling workloads,
+// seqscan-storm's Config exposes no ReportInterval field (by design — the panel cadence
+// is not a teaching knob), so the interval is a package-level value rather than a Config
+// knob. It is a var (not a const) solely so tests can shorten it; production never
+// reassigns it.
+var reportInterval = time.Second
 
 const (
 	// bytesPerRowEstimate is the rough on-disk size of one seeded heap tuple (24-byte
@@ -199,8 +201,10 @@ func (w *workload) Run(ctx context.Context) error {
 
 	// Fan out exactly Jobs workers, each on its own connection. The worker query is a
 	// forced full Seq Scan: payload is seeded as 1..N and never indexed, so the empty
-	// predicate (payload = 0) matches nothing and the planner must scan the whole heap.
-	scanSQL := fmt.Sprintf("SELECT count(*) FROM %s WHERE payload = %d", w.tableIdent, emptyPredicateValue)
+	// predicate (payload = $1, bound to emptyPredicateValue=0) matches nothing and the
+	// planner must scan the whole heap. The table identifier (which cannot be a bind
+	// parameter) is interpolated; the predicate value is bound as $1.
+	scanSQL := fmt.Sprintf("SELECT count(*) FROM %s WHERE payload = $1", w.tableIdent)
 
 	var wg sync.WaitGroup
 	errs := make([]error, w.config.Jobs)
@@ -299,7 +303,7 @@ func runScanWorkerWithConn(ctx context.Context, conn db.Conn, logger log.Logger,
 	// Count this session as live exactly once, after both SETs and before the scan loop.
 	sessions.Add(1)
 
-	return runScan(ctx, conn, logger, scanSQL, queries)
+	return runScan(ctx, conn, logger, scanSQL, queries, sessions)
 }
 
 // skipWorkerLog is the common skip path for a worker that cannot start (failed connect
@@ -324,21 +328,30 @@ func skipWorkerLog(ctx context.Context, logger log.Logger, what string, err erro
 // is irrelevant; only successful completion counts.
 //
 // Returns nil on a clean ctx stop. On a query error under a live ctx after at least one
-// successful scan anywhere (queries > 0), it logs a degradation warning and returns nil —
-// the session was lost, not the run. The first query error while queries is still 0 is
-// returned as a sanitized init error, so a broken setup cannot masquerade as a working
-// scan loop.
-func runScan(ctx context.Context, conn db.Conn, logger log.Logger, scanSQL string, queries *atomic.Int64) error {
+// successful scan anywhere (queries > 0), it logs a degradation warning, decrements
+// sessions EXACTLY once, and returns nil — the session was lost, not the run. The first
+// query error while queries is still 0 is returned as a sanitized init error, so a broken
+// setup cannot masquerade as a working scan loop.
+//
+// sessions is decremented ONLY here and ONLY on the degraded death path (query error,
+// queries>0, ctx still live): never on a clean ctx-cancel exit and never on conn.Close
+// (Close is the caller's defer), so the live-session count never goes negative and a
+// ctx-cancelled worker (shutting down normally) is not mistaken for a degraded death.
+func runScan(ctx context.Context, conn db.Conn, logger log.Logger, scanSQL string, queries, sessions *atomic.Int64) error {
 	for {
 		err := scanOnce(ctx, conn, scanSQL)
 		if err != nil {
-			// A clean ctx stop must not be reported as a failure.
+			// A clean ctx stop must not be reported as a failure (and must not decrement).
 			if ctx.Err() != nil {
 				return nil
 			}
 
 			if queries.Load() > 0 {
+				// Mid-run loss of this session: degradation, not death of the run.
+				// Decrement the live session count exactly once and let the other
+				// workers carry on.
 				logger.Warnf("seqscan-storm: worker lost connection: %s", sanitize(err))
+				sessions.Add(-1)
 				return nil
 			}
 
@@ -358,9 +371,10 @@ func runScan(ctx context.Context, conn db.Conn, logger log.Logger, scanSQL strin
 
 // scanOnce runs one count(*) scan to completion: Query, drain the single result row,
 // check rows.Err(), and Close — a scan is "successful" only after a clean Scan and a
-// nil rows.Err(), so a half-read result never counts as a completed scan.
+// nil rows.Err(), so a half-read result never counts as a completed scan. The empty
+// predicate is passed as bind arg $1, not interpolated into the SQL text.
 func scanOnce(ctx context.Context, conn db.Conn, scanSQL string) error {
-	rows, err := conn.Query(ctx, scanSQL)
+	rows, err := conn.Query(ctx, scanSQL, emptyPredicateValue)
 	if err != nil {
 		return err
 	}

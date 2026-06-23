@@ -574,16 +574,68 @@ func Test_runScan_loopsAndCountsUntilCancel(t *testing.T) {
 	defer cancel()
 	conn := &scanConn{stopAfter: 5, cancel: cancel}
 
-	var queries atomic.Int64
+	var queries, sessions atomic.Int64
 	scanSQL := "SELECT count(*) FROM t WHERE payload = 0"
 
-	err := runScan(ctx, conn, log.NewDefaultLogger("error"), scanSQL, &queries)
+	err := runScan(ctx, conn, log.NewDefaultLogger("error"), scanSQL, &queries, &sessions)
 	assert.NoError(t, err, "a clean ctx cancel must not surface as an error")
 	assert.GreaterOrEqual(t, queries.Load(), int64(5), "every completed scan must increment the queries counter")
 
 	for _, q := range conn.queryStatements() {
 		assert.Equal(t, scanSQL, q, "the worker must loop exactly the forced-Seq-Scan count(*) query")
 	}
+}
+
+func Test_runScan_initErrorOnFirstScan(t *testing.T) {
+	// Init-error branch: the FIRST scan fails (queries==0) under a live ctx. runScan must
+	// return a sanitized init error (no DSN leak) and must NOT decrement sessions — a
+	// worker that never completed a scan is not a degraded death, it is a setup defect.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// queryOKBefore=0 so the very first Query fails; the error carries a DSN token.
+	conn := &scanConn{
+		queryErr:      fmt.Errorf("scan failed: password=SENTINEL_SECRET reset"),
+		queryOKBefore: 0,
+	}
+
+	var queries, sessions atomic.Int64
+	sessions.Store(1) // this worker counted itself live before entering the loop.
+
+	err := runScan(ctx, conn, log.NewDefaultLogger("error"), "SELECT count(*) FROM t WHERE payload = $1", &queries, &sessions)
+
+	assert.Error(t, err, "a first-scan failure with queries==0 is a returned init error")
+	assert.NotContains(t, err.Error(), "SENTINEL_SECRET", "the init error must be sanitized")
+	assert.Equal(t, int64(0), queries.Load(), "no scan completed, so queries stays 0")
+	assert.Equal(t, int64(1), sessions.Load(), "the init-error path must NOT decrement sessions")
+}
+
+func Test_runScan_degradedDecrementsSessionsOnce(t *testing.T) {
+	// Degraded branch: a few scans succeed (queries>0), then the conn fails mid-loop while
+	// ctx is still alive. runScan must log a degradation warning, return nil (degraded, not
+	// fatal), and decrement sessions EXACTLY once — so the panel stops counting this dead
+	// worker as live. This locks in fix 1.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := &captureLogger{}
+
+	// First 3 scans succeed, the 4th (and beyond) fails; ctx stays alive throughout.
+	conn := &scanConn{
+		queryErr:      fmt.Errorf("worker conn dropped"),
+		queryOKBefore: 3,
+	}
+
+	var queries, sessions atomic.Int64
+	sessions.Store(2) // two sibling workers live; this one is the 2nd of them.
+
+	err := runScan(ctx, conn, logger, "SELECT count(*) FROM t WHERE payload = $1", &queries, &sessions)
+
+	assert.NoError(t, err, "a degraded mid-run loss returns nil, not an error")
+	assert.GreaterOrEqual(t, queries.Load(), int64(3), "the scans that succeeded before the loss must have counted")
+	assert.Equal(t, int64(1), sessions.Load(), "the degraded death must decrement sessions EXACTLY once (2 -> 1)")
+
+	joined := strings.Join(logger.warns(), "\n")
+	assert.Contains(t, joined, "worker lost connection", "the degraded loss must be warned")
 }
 
 func Test_runWorker_issuesBothSetsThenScans(t *testing.T) {
@@ -660,6 +712,14 @@ func Test_runReporter(t *testing.T) {
 	// runReporter prints the panel each interval, reading only the atomics. Drive it for a
 	// tick against controlled atomics and assert the exact panel shape plus the
 	// scanned = queries × realTableSize math and the counter-delta rate via formatBytes.
+	//
+	// Shorten the package-level reportInterval so the test ticks quickly instead of
+	// sleeping a full second; restore it afterwards. The rate is normalized by the
+	// interval in seconds, so a sub-second interval still yields the same rate/s.
+	origInterval := reportInterval
+	reportInterval = 50 * time.Millisecond
+	defer func() { reportInterval = origInterval }()
+
 	const size int64 = 1024 * 1024 // 1 MiB per scan
 	logger := &captureLogger{}
 	w := &workload{
@@ -687,9 +747,10 @@ func Test_runReporter(t *testing.T) {
 	assert.GreaterOrEqual(t, len(lines), 1, "at least one panel line must be printed")
 
 	first := lines[0]
-	// scanned = 40 × 1 MiB = 40 MiB; rate ≈ 40 MiB over a 1s interval = 40.0MB/s.
+	// scanned = 40 × 1 MiB = 40 MiB; rate = 40 MiB normalized by the 50 ms interval =
+	// 40 MiB / 0.05 s = 800 MiB/s.
 	assert.Contains(t, first, "seqscan-storm: scanned=40.0MB", "scanned must be queries × realTableSize via formatBytes")
-	assert.Contains(t, first, "rate=40.0MB/s", "rate must be the scanned-delta over the interval, human-readable")
+	assert.Contains(t, first, "rate=800.0MB/s", "rate must be the scanned-delta normalized by the interval, human-readable")
 	assert.Contains(t, first, "queries=40", "panel must report the completed-query count")
 	assert.Contains(t, first, "sessions=3", "panel must report live sessions from the atomic")
 	assert.Contains(t, first, "uptime=", "panel must report uptime")
