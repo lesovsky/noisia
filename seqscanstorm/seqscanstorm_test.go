@@ -10,7 +10,9 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -177,6 +179,14 @@ func (l *captureLogger) warns() []string {
 	defer l.mu.Unlock()
 	out := make([]string, len(l.warnLines))
 	copy(out, l.warnLines)
+	return out
+}
+
+func (l *captureLogger) infos() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]string, len(l.infoLines))
+	copy(out, l.infoLines)
 	return out
 }
 
@@ -458,5 +468,269 @@ func Test_readRelationSize(t *testing.T) {
 		got, err := readRelationSize(context.Background(), conn, "noisia_seqscan_x")
 		assert.Error(t, err)
 		assert.Equal(t, int64(0), got)
+	})
+}
+
+// scanRows is a pgx.Rows double for the worker's count(*) Query: a single row whose
+// Scan yields 0 (count of an always-empty predicate). Only Next/Scan/Err/Close are
+// exercised; the rest are stubbed.
+type scanRows struct {
+	pos int
+}
+
+func (r *scanRows) Close()                                       {}
+func (r *scanRows) Err() error                                   { return nil }
+func (r *scanRows) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
+func (r *scanRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
+func (r *scanRows) Next() bool {
+	if r.pos > 0 {
+		return false
+	}
+	r.pos++
+	return true
+}
+func (r *scanRows) Scan(dest ...any) error {
+	if len(dest) > 0 {
+		if p, ok := dest[0].(*int64); ok {
+			*p = 0
+		}
+	}
+	return nil
+}
+func (r *scanRows) Values() ([]any, error) { return nil, nil }
+func (r *scanRows) RawValues() [][]byte    { return nil }
+func (r *scanRows) Conn() *pgx.Conn        { return nil }
+
+// scanConn is a db.Conn double for the worker engine: it records the SQL of every Exec
+// (the two SETs) and every Query (the count(*) scan), can be configured to fail a
+// specific SET, and self-cancels the context after stopAfter completed scans so the
+// otherwise-unbounded scan loop terminates without relying on wall-clock.
+type scanConn struct {
+	mu sync.Mutex
+
+	execs    []string
+	queries  []string
+	setFails map[string]error // substring of a SET -> error to return for it
+
+	queryErr      error // returned by Query once queryOKBefore scans have completed
+	queryOKBefore int
+
+	stopAfter int // cancel ctx after this many successful Query (scan) calls
+	cancel    context.CancelFunc
+}
+
+func (c *scanConn) Begin(ctx context.Context) (db.Tx, error) { panic("not implemented") }
+
+func (c *scanConn) Exec(ctx context.Context, sql string, args ...interface{}) (int64, string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.execs = append(c.execs, sql)
+	for sub, err := range c.setFails {
+		if strings.Contains(sql, sub) {
+			return 0, "", err
+		}
+	}
+	return 0, "", nil
+}
+
+func (c *scanConn) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.queries = append(c.queries, sql)
+
+	if c.queryErr != nil && len(c.queries) > c.queryOKBefore {
+		return nil, c.queryErr
+	}
+
+	if c.stopAfter > 0 && len(c.queries) >= c.stopAfter && c.cancel != nil {
+		c.cancel()
+	}
+	return &scanRows{}, nil
+}
+
+func (c *scanConn) Close() error { return nil }
+
+func (c *scanConn) execStatements() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]string, len(c.execs))
+	copy(out, c.execs)
+	return out
+}
+
+func (c *scanConn) queryStatements() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]string, len(c.queries))
+	copy(out, c.queries)
+	return out
+}
+
+func Test_runScan_loopsAndCountsUntilCancel(t *testing.T) {
+	// The scan loop issues the count(*) query repeatedly, incrementing the shared queries
+	// atomic per completed scan, and returns nil (clean) when ctx is cancelled. The conn
+	// self-cancels after stopAfter scans to bound the loop.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conn := &scanConn{stopAfter: 5, cancel: cancel}
+
+	var queries atomic.Int64
+	scanSQL := "SELECT count(*) FROM t WHERE payload = 0"
+
+	err := runScan(ctx, conn, log.NewDefaultLogger("error"), scanSQL, &queries)
+	assert.NoError(t, err, "a clean ctx cancel must not surface as an error")
+	assert.GreaterOrEqual(t, queries.Load(), int64(5), "every completed scan must increment the queries counter")
+
+	for _, q := range conn.queryStatements() {
+		assert.Equal(t, scanSQL, q, "the worker must loop exactly the forced-Seq-Scan count(*) query")
+	}
+}
+
+func Test_runWorker_issuesBothSetsThenScans(t *testing.T) {
+	// A worker issues SET application_name then SET max_parallel_workers_per_gather=0,
+	// counts itself live (sessions), then loops the scan; on ctx cancel it returns nil.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conn := &scanConn{stopAfter: 3, cancel: cancel}
+
+	var queries, sessions atomic.Int64
+	scanSQL := "SELECT count(*) FROM t WHERE payload = 0"
+
+	err := runScanWorkerWithConn(ctx, conn, log.NewDefaultLogger("error"), scanSQL, &queries, &sessions)
+	assert.NoError(t, err)
+
+	execs := conn.execStatements()
+	assert.GreaterOrEqual(t, len(execs), 2, "worker must issue both SETs before scanning")
+	assert.Contains(t, execs[0], "SET application_name = 'noisia'", "first SET must be application_name")
+	assert.Contains(t, execs[1], "SET max_parallel_workers_per_gather = 0", "second SET must be the determinism SET")
+	assert.Equal(t, int64(1), sessions.Load(), "a fully-started worker counts as exactly one live session")
+	assert.GreaterOrEqual(t, queries.Load(), int64(3), "the scan loop must run and count completed scans")
+}
+
+func Test_runWorker_skippedWhenDeterminismSetFails(t *testing.T) {
+	// DECISION 5: a worker whose determinism SET fails is skipped — the scan loop never
+	// runs, sessions does not count it, and a sanitized warning is emitted (no DSN leak).
+	// With sessions==0 at skip time, the init error is returned (and sanitized).
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := &captureLogger{}
+	conn := &scanConn{
+		setFails: map[string]error{
+			"max_parallel_workers_per_gather": fmt.Errorf("SET failed: password=SENTINEL_SECRET broken conn"),
+		},
+	}
+
+	var queries, sessions atomic.Int64
+	err := runScanWorkerWithConn(ctx, conn, logger, "SELECT count(*) FROM t WHERE payload = 0", &queries, &sessions)
+
+	assert.Error(t, err, "with zero live sessions, a skipped worker returns the init error")
+	assert.NotContains(t, err.Error(), "SENTINEL_SECRET", "the init error must be sanitized")
+	assert.Empty(t, conn.queryStatements(), "the scan loop must NOT run when the determinism SET fails")
+	assert.Equal(t, int64(0), sessions.Load(), "a skipped worker must not be counted as a live session")
+
+	joined := strings.Join(logger.warns(), "\n")
+	assert.NotContains(t, joined, "SENTINEL_SECRET", "the skip warning must be sanitized")
+}
+
+func Test_runWorker_skippedDegradedWhenOtherWorkerLive(t *testing.T) {
+	// When another worker is already live (sessions>0), a worker whose determinism SET
+	// fails degrades (Warn + nil) rather than failing the whole Run.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := &captureLogger{}
+	conn := &scanConn{
+		setFails: map[string]error{
+			"max_parallel_workers_per_gather": fmt.Errorf("SET failed on a broken connection"),
+		},
+	}
+
+	var queries, sessions atomic.Int64
+	sessions.Store(1) // pretend a sibling worker is already live
+
+	err := runScanWorkerWithConn(ctx, conn, logger, "SELECT count(*) FROM t WHERE payload = 0", &queries, &sessions)
+	assert.NoError(t, err, "with another live worker the skip degrades rather than erroring")
+	assert.Empty(t, conn.queryStatements(), "the scan loop must NOT run when the determinism SET fails")
+	assert.Equal(t, int64(1), sessions.Load(), "sessions must not gain a skipped worker (stays at the sibling's 1)")
+
+	joined := strings.Join(logger.warns(), "\n")
+	assert.Contains(t, joined, "degraded", "a degraded skip must be warned")
+}
+
+func Test_runReporter(t *testing.T) {
+	// runReporter prints the panel each interval, reading only the atomics. Drive it for a
+	// tick against controlled atomics and assert the exact panel shape plus the
+	// scanned = queries × realTableSize math and the counter-delta rate via formatBytes.
+	const size int64 = 1024 * 1024 // 1 MiB per scan
+	logger := &captureLogger{}
+	w := &workload{
+		config:        Config{},
+		logger:        logger,
+		realTableSize: size,
+	}
+
+	var queries, sessions atomic.Int64
+	queries.Store(40) // 40 scans × 1 MiB = 40 MiB scanned before the first tick.
+	sessions.Store(3)
+
+	done := make(chan struct{})
+	reporterDone := make(chan struct{})
+	go func() {
+		w.runReporter(context.Background(), done, time.Now(), &queries, &sessions)
+		close(reporterDone)
+	}()
+
+	time.Sleep(reportInterval + 200*time.Millisecond)
+	close(done)
+	<-reporterDone
+
+	lines := logger.infos()
+	assert.GreaterOrEqual(t, len(lines), 1, "at least one panel line must be printed")
+
+	first := lines[0]
+	// scanned = 40 × 1 MiB = 40 MiB; rate ≈ 40 MiB over a 1s interval = 40.0MB/s.
+	assert.Contains(t, first, "seqscan-storm: scanned=40.0MB", "scanned must be queries × realTableSize via formatBytes")
+	assert.Contains(t, first, "rate=40.0MB/s", "rate must be the scanned-delta over the interval, human-readable")
+	assert.Contains(t, first, "queries=40", "panel must report the completed-query count")
+	assert.Contains(t, first, "sessions=3", "panel must report live sessions from the atomic")
+	assert.Contains(t, first, "uptime=", "panel must report uptime")
+}
+
+func Test_warmup_bestEffort(t *testing.T) {
+	// A forced warm-up query error is best-effort: warmup warns (sanitized) and returns
+	// so escalation proceeds; it does not panic or block. ctx-cancel during warm-up is a
+	// silent clean exit (no warning), which the caller (Run) translates into a clean stop.
+	t.Run("query error warns and proceeds", func(t *testing.T) {
+		logger := &captureLogger{}
+		conn := &scanConn{queryErr: fmt.Errorf("warm-up failed: password=SENTINEL_SECRET reset")}
+		w := &workload{
+			config:        Config{},
+			logger:        logger,
+			tableIdent:    "\"noisia_seqscan_x\"",
+			realTableSize: 1 << 20,
+		}
+
+		w.warmup(context.Background(), conn)
+
+		joined := strings.Join(logger.warns(), "\n")
+		assert.Contains(t, joined, "warm-up scan failed", "a real warm-up error must be warned, not fatal")
+		assert.NotContains(t, joined, "SENTINEL_SECRET", "the warm-up warning must be sanitized")
+	})
+
+	t.Run("ctx cancel during warm-up is a silent clean exit", func(t *testing.T) {
+		logger := &captureLogger{}
+		conn := &scanConn{queryErr: fmt.Errorf("context canceled")}
+		w := &workload{
+			config:        Config{},
+			logger:        logger,
+			tableIdent:    "\"noisia_seqscan_x\"",
+			realTableSize: 1 << 20,
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		w.warmup(ctx, conn)
+
+		joined := strings.Join(logger.warns(), "\n")
+		assert.NotContains(t, joined, "warm-up scan failed", "a ctx-cancel in warm-up must be a silent clean exit")
 	})
 }

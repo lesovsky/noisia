@@ -27,12 +27,19 @@ import (
 	"fmt"
 	"math/rand"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lesovsky/noisia"
 	"github.com/lesovsky/noisia/db"
 	"github.com/lesovsky/noisia/log"
 )
+
+// reportInterval is the fixed escalation-panel print cadence. Unlike the sibling
+// workloads, seqscan-storm's Config exposes no ReportInterval field (by design — the
+// panel cadence is not a teaching knob), so the interval is a package constant.
+const reportInterval = time.Second
 
 const (
 	// bytesPerRowEstimate is the rough on-disk size of one seeded heap tuple (24-byte
@@ -106,12 +113,294 @@ func NewWorkload(config Config, logger log.Logger) (noisia.Workload, error) {
 	return &workload{config: config, logger: logger}, nil
 }
 
-// Run is implemented by the follow-up escalation-engine task (warm-up, per-worker
-// connections, scan loop, reporter). The foundation task ships only the lifecycle
-// scaffolding (Config/validate, prepare, readRelationSize, cleanup) this builds on.
+// Run opens a dedicated seed connection to build the un-indexed table, reads its real
+// on-disk size once, warms its cache with a single full pass (best-effort), then fans
+// out up to Jobs per-worker connections that loop a forced full-table Seq Scan while a
+// ticker reports logical bytes scanned. Each worker owns its own connection (no shared
+// pool, so the pool default max_conns cannot cap parallelism below --jobs, ADR-003-1).
+// The seed table is dropped in a defer on a fresh context.Background() (ctx is already
+// cancelled at exit). The only stop mechanism is the supplied ctx.
 func (w *workload) Run(ctx context.Context) error {
-	// TODO(task-02): seed connection, warm-up, worker fan-out, reporter.
-	return fmt.Errorf("seqscan-storm: Run not implemented yet")
+	conn, err := db.Connect(ctx, w.config.Conninfo)
+	if err != nil {
+		// Never echo the raw error: it may carry DSN fragments (e.g. password=…).
+		return fmt.Errorf("connect to target failed: %s", sanitize(err))
+	}
+	defer func() { _ = conn.Close() }()
+
+	// Attribute the seeding backend in pg_stat_activity. db.Connect (unlike the pool
+	// path) does not set application_name, so set it locally here.
+	_, _, err = conn.Exec(ctx, "SET application_name = 'noisia'")
+	if err != nil {
+		return fmt.Errorf("set application_name failed: %s", sanitize(err))
+	}
+
+	// Build the per-run table name once. The suffix is restricted to [a-z0-9], which
+	// alone makes the identifier injection-safe; double-quoting is belt-and-suspenders.
+	// The identifier (which cannot be a bind parameter) is reused verbatim in
+	// CREATE/DROP/work SQL; the row count and relname are bind args.
+	w.tableIdent = "\"noisia_seqscan_" + randomSuffix(8) + "\""
+	w.tableName = strings.Trim(w.tableIdent, "\"")
+
+	// Cleanup is registered right after a successful connect so the table is dropped even
+	// if seeding fails. It runs on a fresh context.Background() because ctx is already
+	// cancelled at exit and a drop on a cancelled ctx would fail (ADR-002-2).
+	defer w.cleanup(w.tableIdent)
+
+	// Seed the large un-indexed table. Seeding a multi-hundred-MiB table takes a while,
+	// and the reporter starts only after warm-up, so emit explicit feedback.
+	rows := rowsForSize(w.config.TableSize)
+	w.logger.Infof("seqscan-storm: seeding %d rows (~%s), this may take a while...", rows, formatBytes(w.config.TableSize))
+	err = prepare(ctx, conn, w.tableIdent, rows)
+	if err != nil {
+		// A clean ctx stop must not be reported as a failure.
+		if ctx.Err() != nil {
+			return nil
+		}
+		return fmt.Errorf("seed table failed: %s", sanitize(err))
+	}
+
+	// Read the real on-disk heap size once (the panel's per-scan logical size). On
+	// failure, warn (sanitized) and fall back to the configured TableSize as an
+	// approximate size — the panel still reports a sensible scanned figure.
+	w.realTableSize, err = readRelationSize(ctx, conn, w.tableName)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		w.logger.Warnf("seqscan-storm: reading table size failed, using configured --table-size (approx): %s", sanitize(err))
+		w.realTableSize = w.config.TableSize
+	}
+
+	// Warm-up pre-phase (best-effort) on the seed connection: a clean ctx stop here is a
+	// clean exit, not an error; a real query error warns and proceeds to escalation.
+	w.warmup(ctx, conn)
+	if ctx.Err() != nil {
+		return nil
+	}
+
+	w.logger.Infof("seqscan-storm: starting %d scan workers — watch server CPU (pgcenter/top)", w.config.Jobs)
+
+	// queries holds the total completed full scans across all workers; sessions holds the
+	// live worker count. Both are shared and read by the reporter, which must never touch
+	// a (not concurrency-safe) Conn (ADR-002-3).
+	var queries atomic.Int64
+	var sessions atomic.Int64
+
+	// start is taken AFTER warm-up returns (uptime counts from escalation start).
+	start := time.Now()
+	tickerDone := make(chan struct{})
+	var reporterWg sync.WaitGroup
+	reporterWg.Add(1)
+	go func() {
+		defer reporterWg.Done()
+		w.runReporter(ctx, tickerDone, start, &queries, &sessions)
+	}()
+
+	// Fan out exactly Jobs workers, each on its own connection. The worker query is a
+	// forced full Seq Scan: payload is seeded as 1..N and never indexed, so the empty
+	// predicate (payload = 0) matches nothing and the planner must scan the whole heap.
+	scanSQL := fmt.Sprintf("SELECT count(*) FROM %s WHERE payload = %d", w.tableIdent, emptyPredicateValue)
+
+	var wg sync.WaitGroup
+	errs := make([]error, w.config.Jobs)
+	wg.Add(int(w.config.Jobs))
+	for i := 0; i < int(w.config.Jobs); i++ {
+		go func(idx int) {
+			defer wg.Done()
+			errs[idx] = w.runWorker(ctx, scanSQL, &queries, &sessions)
+		}(i)
+	}
+	wg.Wait()
+
+	close(tickerDone)
+	reporterWg.Wait()
+
+	// Surface the first init error (a real setup defect — e.g. exhausted connections)
+	// reported by any worker; a degraded run (>=1 worker alive) or a clean stop leaves
+	// all errs nil — Run errors only when ZERO workers were ever live.
+	for _, e := range errs {
+		if e != nil {
+			return e
+		}
+	}
+
+	return nil
+}
+
+// warmup runs one full-table scan over the seed connection to load the heap into the
+// page cache, so the first demo seconds show CPU-bound scanning rather than iowait
+// (Decision 6). It is best-effort: a clean ctx stop exits silently (the caller checks
+// ctx.Err()), and a real query error is warned (sanitized) and swallowed so escalation
+// proceeds anyway — the escalation scans warm the cache themselves.
+func (w *workload) warmup(ctx context.Context, conn db.Conn) {
+	w.logger.Infof("seqscan-storm: warming up cache: full scan of %s (%s)", w.tableIdent, formatBytes(w.realTableSize))
+
+	warmSQL := fmt.Sprintf("SELECT count(*) FROM %s", w.tableIdent)
+	rows, err := conn.Query(ctx, warmSQL)
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		w.logger.Warnf("seqscan-storm: warm-up scan failed (continuing to escalation): %s", sanitize(err))
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		// The count value is irrelevant; the point is to touch every heap page.
+	}
+	if rerr := rows.Err(); rerr != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		w.logger.Warnf("seqscan-storm: warm-up scan failed (continuing to escalation): %s", sanitize(rerr))
+	}
+}
+
+// runWorker opens its OWN dedicated connection and drives the scan loop. A per-worker
+// connection guarantees Jobs concurrent in-flight scans regardless of any pool sizing
+// (ADR-003-1). Right after connect it issues SET application_name then the determinism
+// SET max_parallel_workers_per_gather = 0; if EITHER the connect or the determinism SET
+// fails, the worker is SKIPPED (Decision 5) — a worker without the determinism SET could
+// let parallel query engage, breaking the "1 worker = 1 scan = 1 core" model and the
+// self-report. A skip degrades the run (Warn + nil) as long as another worker is live;
+// only when no worker was ever live (sessions == 0) is the sanitized init error returned.
+// Every connection/SET error passes through sanitize so a pgx error can never leak a DSN.
+func (w *workload) runWorker(ctx context.Context, scanSQL string, queries, sessions *atomic.Int64) error {
+	conn, err := db.Connect(ctx, w.config.Conninfo)
+	if err != nil {
+		return skipWorkerLog(ctx, w.logger, "worker connect failed", err, sessions)
+	}
+	defer func() { _ = conn.Close() }()
+
+	return runScanWorkerWithConn(ctx, conn, w.logger, scanSQL, queries, sessions)
+}
+
+// runScanWorkerWithConn drives the post-connect worker lifecycle over an already-open
+// conn: best-effort SET application_name, the mandatory determinism SET (Decision 5,
+// skip-on-failure), the live-session increment, and the scan loop. It is split from
+// runWorker so the SET/skip/scan logic can be unit-tested over a conn double without a
+// live database (runWorker itself only adds the db.Connect that needs a real server).
+func runScanWorkerWithConn(ctx context.Context, conn db.Conn, logger log.Logger, scanSQL string, queries, sessions *atomic.Int64) error {
+	// db.Connect does not set application_name; do it best-effort so the worker is
+	// attributable in pg_stat_activity. A failed SET must not abort the worker (it is
+	// cosmetic), but its error still passes through sanitize so the DSN is never logged.
+	if _, _, serr := conn.Exec(ctx, "SET application_name = 'noisia'"); serr != nil {
+		logger.Warnf("seqscan-storm: set application_name failed: %s", sanitize(serr))
+	}
+
+	// Determinism SET (Decision 5): functional, not cosmetic. If it fails, skip the
+	// worker entirely — do NOT run a non-deterministic worker.
+	if _, _, serr := conn.Exec(ctx, "SET max_parallel_workers_per_gather = 0"); serr != nil {
+		return skipWorkerLog(ctx, logger, "worker set max_parallel_workers_per_gather failed", serr, sessions)
+	}
+
+	// Count this session as live exactly once, after both SETs and before the scan loop.
+	sessions.Add(1)
+
+	return runScan(ctx, conn, logger, scanSQL, queries)
+}
+
+// skipWorkerLog is the common skip path for a worker that cannot start (failed connect
+// or failed determinism SET, Decision 5). A clean ctx stop returns nil; if at least one
+// other session is live it degrades (Warn + nil); only when no session ever started
+// (sessions == 0) is the sanitized init error returned, so a broken setup cannot
+// masquerade as a successful run while still allowing a degraded run to continue.
+func skipWorkerLog(ctx context.Context, logger log.Logger, what string, err error, sessions *atomic.Int64) error {
+	if ctx.Err() != nil {
+		return nil
+	}
+	if sessions.Load() > 0 {
+		logger.Warnf("seqscan-storm: %s (degraded): %s", what, sanitize(err))
+		return nil
+	}
+	return fmt.Errorf("%s: %s", what, sanitize(err))
+}
+
+// runScan is one worker's forced-Seq-Scan loop. It owns its Conn and loops the count(*)
+// query (db.Conn has no QueryRow, so Query + Next/Scan + Close), incrementing the SHARED
+// queries counter for every scan that completes successfully. The count(*) result (= 0)
+// is irrelevant; only successful completion counts.
+//
+// Returns nil on a clean ctx stop. On a query error under a live ctx after at least one
+// successful scan anywhere (queries > 0), it logs a degradation warning and returns nil —
+// the session was lost, not the run. The first query error while queries is still 0 is
+// returned as a sanitized init error, so a broken setup cannot masquerade as a working
+// scan loop.
+func runScan(ctx context.Context, conn db.Conn, logger log.Logger, scanSQL string, queries *atomic.Int64) error {
+	for {
+		err := scanOnce(ctx, conn, scanSQL)
+		if err != nil {
+			// A clean ctx stop must not be reported as a failure.
+			if ctx.Err() != nil {
+				return nil
+			}
+
+			if queries.Load() > 0 {
+				logger.Warnf("seqscan-storm: worker lost connection: %s", sanitize(err))
+				return nil
+			}
+
+			// First scan failed with no prior success anywhere: setup defect.
+			return fmt.Errorf("scan failed: %s", sanitize(err))
+		}
+
+		queries.Add(1)
+
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+	}
+}
+
+// scanOnce runs one count(*) scan to completion: Query, drain the single result row,
+// check rows.Err(), and Close — a scan is "successful" only after a clean Scan and a
+// nil rows.Err(), so a half-read result never counts as a completed scan.
+func scanOnce(ctx context.Context, conn db.Conn, scanSQL string) error {
+	rows, err := conn.Query(ctx, scanSQL)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var n int64
+	for rows.Next() {
+		if err := rows.Scan(&n); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+// runReporter prints the escalation panel every reportInterval, reading only the shared
+// atomic queries and sessions counters. It never queries a Conn (ADR-002-3). scanned is
+// the logical bytes scanned = completed queries × the real (once-read) table size; rate
+// is the per-interval delta of scanned, both rendered via formatBytes.
+func (w *workload) runReporter(ctx context.Context, done <-chan struct{}, start time.Time, queries, sessions *atomic.Int64) {
+	ticker := time.NewTicker(reportInterval)
+	defer ticker.Stop()
+
+	var prev int64
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-ticker.C:
+			q := queries.Load()
+			cur := q * w.realTableSize
+			uptime := time.Since(start)
+			rate := int64(float64(cur-prev) / reportInterval.Seconds())
+			prev = cur
+
+			w.logger.Infof("seqscan-storm: scanned=%s rate=%s/s queries=%d sessions=%d uptime=%s",
+				formatBytes(cur), formatBytes(rate), q, sessions.Load(), uptime.Truncate(time.Second))
+		}
+	}
 }
 
 // rowsForSize converts a target byte size into a seed row count via the fixed
