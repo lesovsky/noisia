@@ -13,7 +13,9 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lesovsky/noisia/db"
+	"github.com/lesovsky/noisia/log"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -242,4 +244,219 @@ func Test_cleanup_warnsNamingTableOnConnectFailure(t *testing.T) {
 
 	joined := strings.Join(logger.warns(), "\n")
 	assert.Contains(t, joined, tableIdent, "cleanup warning must name the table for manual drop")
+}
+
+func Test_NewWorkload(t *testing.T) {
+	// NewWorkload must call validate() FIRST and propagate its error: a config that
+	// validate() rejects yields (nil, err) and never a half-built workload. A valid
+	// baseline yields a non-nil workload and no error. No DB is touched.
+	logger := log.NewDefaultLogger("error")
+
+	base := Config{
+		Conninfo:  "host=127.0.0.1 dbname=postgres",
+		TableSize: minTableSize,
+		Jobs:      4,
+	}
+
+	// Valid baseline: non-nil workload, nil error.
+	w, err := NewWorkload(base, logger)
+	assert.NoError(t, err)
+	assert.NotNil(t, w, "valid config must yield a non-nil workload")
+
+	// Invalid configs: validate() runs first, so NewWorkload returns (nil, err).
+	tests := []struct {
+		name string
+		mut  func(c *Config)
+	}{
+		{"empty conninfo", func(c *Config) { c.Conninfo = "" }},
+		{"table size below floor", func(c *Config) { c.TableSize = minTableSize - 1 }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := base
+			tt.mut(&c)
+			got, err := NewWorkload(c, logger)
+			assert.Error(t, err, "invalid config must be rejected before a workload is built")
+			assert.Nil(t, got, "rejected config must yield a nil workload")
+		})
+	}
+}
+
+// txRecorder is a db.Tx double that records every statement Exec'd inside the
+// transaction (with its bind args) and whether Commit/Rollback were called, so
+// prepare()'s SQL and transaction lifecycle can be asserted without a live DB.
+type txRecorder struct {
+	mu         sync.Mutex
+	execs      []recordedExec
+	committed  bool
+	rolledBack bool
+}
+
+type recordedExec struct {
+	sql  string
+	args []interface{}
+}
+
+func (t *txRecorder) Commit(ctx context.Context) error   { t.committed = true; return nil }
+func (t *txRecorder) Rollback(ctx context.Context) error { t.rolledBack = true; return nil }
+func (t *txRecorder) Exec(ctx context.Context, sql string, args ...interface{}) (int64, string, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.execs = append(t.execs, recordedExec{sql: sql, args: args})
+	return 0, "", nil
+}
+func (t *txRecorder) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	panic("not implemented")
+}
+
+// txConn is a db.Conn double whose Begin returns a shared txRecorder, so a test can
+// inspect what prepare() emitted inside the transaction and that it committed.
+type txConn struct {
+	tx         *txRecorder
+	beginCalls int
+}
+
+func (c *txConn) Begin(ctx context.Context) (db.Tx, error) {
+	c.beginCalls++
+	return c.tx, nil
+}
+func (c *txConn) Exec(ctx context.Context, sql string, args ...interface{}) (int64, string, error) {
+	panic("prepare must run its statements inside the transaction, not on the bare conn")
+}
+func (c *txConn) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	panic("not implemented")
+}
+func (c *txConn) Close() error { return nil }
+
+func Test_prepare(t *testing.T) {
+	// prepare() encodes the core seqscan-storm invariant in SQL. Drive it over a tx
+	// double and assert: it runs inside an explicit, committed transaction; CREATE TABLE
+	// has id bigint PRIMARY KEY and payload bigint and NO index on payload; the seed is a
+	// single set-based INSERT ... SELECT g, g FROM generate_series(1, $1) whose row count
+	// is BOUND as $1 (not interpolated). A regression (indexing payload, interpolating the
+	// row count, or losing the transaction) must fail this test.
+	const rows int64 = 12345
+	tableIdent := "\"noisia_seqscan_" + randomSuffix(8) + "\""
+
+	tx := &txRecorder{}
+	conn := &txConn{tx: tx}
+
+	err := prepare(context.Background(), conn, tableIdent, rows)
+	assert.NoError(t, err)
+
+	// Explicit transaction that committed.
+	assert.Equal(t, 1, conn.beginCalls, "prepare must open exactly one transaction")
+	assert.True(t, tx.committed, "prepare must commit the seed transaction")
+
+	tx.mu.Lock()
+	execs := tx.execs
+	tx.mu.Unlock()
+	assert.Len(t, execs, 2, "prepare must emit exactly CREATE TABLE then INSERT")
+
+	createSQL := execs[0].sql
+	assert.Contains(t, createSQL, "CREATE TABLE "+tableIdent, "first statement must create the seed table")
+	assert.Contains(t, createSQL, "id bigint PRIMARY KEY", "id must be a bigint PRIMARY KEY")
+	assert.Contains(t, createSQL, "payload bigint", "payload must be a plain bigint column")
+
+	// The seqscan-storm invariant: payload carries NO index. If any statement built an
+	// index on payload, the worker query could use it and the Seq Scan storm collapses.
+	for _, e := range execs {
+		upper := strings.ToUpper(e.sql)
+		assert.NotContains(t, upper, "CREATE INDEX", "payload must never be indexed")
+		assert.NotContains(t, upper, "INDEX ON", "payload must never be indexed")
+	}
+
+	insert := execs[1]
+	assert.Contains(t, insert.sql, "INSERT INTO "+tableIdent, "second statement must seed the table")
+	assert.Contains(t, insert.sql, "SELECT g, g FROM generate_series(1, $1)",
+		"seed must be a single set-based INSERT ... SELECT over generate_series with the row count as $1")
+	// The row count must be BOUND as $1, not string-interpolated into the SQL text.
+	assert.NotContains(t, insert.sql, fmt.Sprintf("%d", rows), "row count must not be interpolated into the SQL text")
+	assert.Equal(t, []interface{}{rows}, insert.args, "row count must be passed as bind arg $1")
+}
+
+// fakeRows is a minimal pgx.Rows double for the db.Conn.Query path in readRelationSize.
+// It yields a single configurable int64 (the relation size) over one Next/Scan, or a
+// scan error, modeling pg_relation_size's single-row result. The unused pgx.Rows methods
+// are stubbed: readRelationSize only calls Next, Scan, Err and Close.
+type fakeRows struct {
+	size    int64
+	scanErr error
+	pos     int
+}
+
+func (r *fakeRows) Close()                                       {}
+func (r *fakeRows) Err() error                                   { return nil }
+func (r *fakeRows) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
+func (r *fakeRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
+func (r *fakeRows) Next() bool {
+	if r.pos > 0 {
+		return false
+	}
+	r.pos++
+	return true
+}
+func (r *fakeRows) Scan(dest ...any) error {
+	if r.scanErr != nil {
+		return r.scanErr
+	}
+	if len(dest) > 0 {
+		if p, ok := dest[0].(*int64); ok {
+			*p = r.size
+		}
+	}
+	return nil
+}
+func (r *fakeRows) Values() ([]any, error) { return nil, nil }
+func (r *fakeRows) RawValues() [][]byte    { return nil }
+func (r *fakeRows) Conn() *pgx.Conn        { return nil }
+
+// queryConn is a db.Conn double that captures the SQL and bind args of the single Query
+// readRelationSize issues, and returns a configured fakeRows or a query error.
+type queryConn struct {
+	rows     pgx.Rows
+	queryErr error
+	gotSQL   string
+	gotArgs  []interface{}
+}
+
+func (c *queryConn) Begin(ctx context.Context) (db.Tx, error) { panic("not implemented") }
+func (c *queryConn) Exec(ctx context.Context, sql string, args ...interface{}) (int64, string, error) {
+	panic("not implemented")
+}
+func (c *queryConn) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	c.gotSQL = sql
+	c.gotArgs = args
+	if c.queryErr != nil {
+		return nil, c.queryErr
+	}
+	return c.rows, nil
+}
+func (c *queryConn) Close() error { return nil }
+
+func Test_readRelationSize(t *testing.T) {
+	// Happy path: readRelationSize returns the size scanned from the single result row,
+	// and passes the UNQUOTED relname as bind arg $1 (pg_relation_size takes a value, not
+	// an identifier — quoting it would break the lookup).
+	t.Run("happy path", func(t *testing.T) {
+		const want int64 = 188 << 20
+		const relname = "noisia_seqscan_abcd1234"
+		conn := &queryConn{rows: &fakeRows{size: want}}
+
+		got, err := readRelationSize(context.Background(), conn, relname)
+		assert.NoError(t, err)
+		assert.Equal(t, want, got)
+		assert.Equal(t, []interface{}{relname}, conn.gotArgs, "relname must be passed UNQUOTED as bind arg $1")
+		assert.NotContains(t, conn.gotSQL, relname, "relname must not be interpolated into the SQL text")
+	})
+
+	// Query error path: the error from conn.Query propagates and the size is zero.
+	t.Run("query error", func(t *testing.T) {
+		conn := &queryConn{queryErr: fmt.Errorf("relation does not exist")}
+
+		got, err := readRelationSize(context.Background(), conn, "noisia_seqscan_x")
+		assert.Error(t, err)
+		assert.Equal(t, int64(0), got)
+	})
 }
