@@ -213,8 +213,16 @@ func (w *workload) runWorker(ctx context.Context, updateSQL string, workerIndex 
 
 	defer func() { _ = conn.Close() }()
 
-	id := (workerIndex % w.config.HotRows) + 1
+	id := hotRowID(workerIndex, w.config.HotRows)
 	return runChurn(ctx, conn, w.logger, updateSQL, id, attempts, sessions)
+}
+
+// hotRowID maps a worker index to the shared hot row it churns: (workerIndex mod
+// HotRows)+1. Multiple worker indices fold onto the same id (e.g. with HotRows=2,
+// indices 0 and 2 both map to id 1), which is the contention — the deliberate inverse
+// of wal-flood's disjoint partition().
+func hotRowID(workerIndex, hotRows int) int {
+	return (workerIndex % hotRows) + 1
 }
 
 // runChurn is one worker's autocommit UPDATE loop. It owns its Conn and hammers a single

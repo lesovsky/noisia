@@ -215,6 +215,153 @@ func Test_runChurn_ctxDoneClean(t *testing.T) {
 	assert.Equal(t, int64(1), sessions.Load())
 }
 
+// recordingConn is a db.Conn double that records the id bind argument of every UPDATE so
+// a test can assert which hot row a worker targets. After stopAfter Execs it cancels the
+// context, bounding the rate.Inf churn loop without relying on wall-clock.
+type recordingConn struct {
+	mu        sync.Mutex
+	ids       map[int]struct{}
+	calls     int
+	stopAfter int
+	cancel    context.CancelFunc
+}
+
+func (c *recordingConn) Begin(ctx context.Context) (db.Tx, error) { panic("not implemented") }
+func (c *recordingConn) Exec(ctx context.Context, sql string, args ...interface{}) (int64, string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ids == nil {
+		c.ids = make(map[int]struct{})
+	}
+	if len(args) == 1 {
+		if id, ok := args[0].(int); ok {
+			c.ids[id] = struct{}{}
+		}
+	}
+	c.calls++
+	if c.stopAfter > 0 && c.calls >= c.stopAfter && c.cancel != nil {
+		c.cancel()
+	}
+	return 0, "UPDATE", nil
+}
+func (c *recordingConn) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	panic("not implemented")
+}
+func (c *recordingConn) Close() error { return nil }
+
+func (c *recordingConn) seenIDs() map[int]struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make(map[int]struct{}, len(c.ids))
+	for k := range c.ids {
+		out[k] = struct{}{}
+	}
+	return out
+}
+
+func Test_runChurn_sharesHotRows(t *testing.T) {
+	// The deliberate INVERSE of wal-flood's disjoint partition: worker i targets row
+	// (i mod HotRows)+1, so several worker indices fold onto the SAME row. Drive runChurn
+	// per worker index with a recordingConn that captures the id bind arg, and assert the
+	// (i mod HotRows)+1 sharing mapping with zero DB and zero flakiness.
+	const hotRows = 2
+
+	// Each worker churns exactly the id hotRowID maps it to; record what id it UPDATEs.
+	idForWorker := make(map[int]int)
+	for idx := 0; idx < 4; idx++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		rec := &recordingConn{stopAfter: 3, cancel: cancel}
+
+		var attempts, sessions atomic.Int64
+		id := hotRowID(idx, hotRows)
+		_ = runChurn(ctx, rec, log.NewDefaultLogger("error"), "UPDATE t SET counter = counter + 1 WHERE id = $1", id, &attempts, &sessions)
+		cancel()
+
+		seen := rec.seenIDs()
+		assert.Len(t, seen, 1, "a worker churns exactly one shared hot row")
+		_, ok := seen[id]
+		assert.True(t, ok, "worker %d must UPDATE its mapped hot row id=%d", idx, id)
+		idForWorker[idx] = id
+	}
+
+	// The mapping must fold multiple worker indices onto the same row and span exactly the
+	// HotRows shared rows {1,2}: idx 0,2 -> id 1; idx 1,3 -> id 2.
+	assert.Equal(t, 1, idForWorker[0])
+	assert.Equal(t, 2, idForWorker[1])
+	assert.Equal(t, 1, idForWorker[2], "worker 2 must SHARE row 1 with worker 0")
+	assert.Equal(t, 2, idForWorker[3], "worker 3 must SHARE row 2 with worker 1")
+
+	seenIDs := map[int]struct{}{}
+	for _, id := range idForWorker {
+		seenIDs[id] = struct{}{}
+	}
+	assert.Equal(t, map[int]struct{}{1: {}, 2: {}}, seenIDs, "workers must span exactly the HotRows shared rows")
+}
+
+func Test_runChurn_attemptsGatesInitVsDegradation(t *testing.T) {
+	// The init-vs-degradation rule is keyed on the SHARED attempts atomic, so it must be
+	// proven under concurrency: worker A succeeds a few Execs (attempts>0 globally), then
+	// worker B's FIRST Exec fails under a live ctx. Because attempts>0, B's failure is
+	// degradation (return nil, sessions decremented once), NOT an init error.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	logger := &captureLogger{}
+	var attempts, sessions atomic.Int64
+	sessions.Store(2) // two live workers
+
+	// Worker A: succeeds 3 Execs, raising the shared attempts>0, then would error — but we
+	// drive it first and let it lift attempts before B's first Exec.
+	connA := &fakeConn{execErr: fmt.Errorf("connection reset by peer"), execOKBefore: 3}
+	// Worker B: fails on its very first Exec.
+	connB := &fakeConn{execErr: fmt.Errorf("connection reset by peer"), execOKBefore: 0}
+
+	// Run A to completion first so attempts is provably > 0 before B starts (deterministic;
+	// no reliance on goroutine scheduling for the gate to be observed).
+	errA := runChurn(ctx, connA, logger, "UPDATE t SET counter = counter + 1 WHERE id = $1", 1, &attempts, &sessions)
+	assert.NoError(t, errA, "worker A degrades after success (attempts>0), returns nil")
+	assert.Greater(t, attempts.Load(), int64(0), "worker A must have raised the shared attempts counter")
+	assert.Equal(t, int64(1), sessions.Load(), "worker A decremented sessions exactly once (2 -> 1)")
+
+	errB := runChurn(ctx, connB, logger, "UPDATE t SET counter = counter + 1 WHERE id = $1", 2, &attempts, &sessions)
+	assert.NoError(t, errB, "worker B's first failure with attempts>0 globally is degradation, not an init error")
+	assert.Equal(t, int64(0), sessions.Load(), "worker B decremented sessions exactly once (1 -> 0)")
+}
+
+func Test_runChurn_twoWorkersConcurrentFirstFailure(t *testing.T) {
+	// Both workers fail their very first Exec before any success anywhere (shared attempts
+	// == 0) => both return init errors and sessions is left unchanged (the inverse aggregation
+	// gate). This mirrors walflood's concurrent first-failure test.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	logger := log.NewDefaultLogger("error")
+	var attempts, sessions atomic.Int64
+	sessions.Store(2)
+
+	conn1 := &fakeConn{execErr: fmt.Errorf("permission denied"), execOKBefore: 0}
+	conn2 := &fakeConn{execErr: fmt.Errorf("permission denied"), execOKBefore: 0}
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		errs[0] = runChurn(ctx, conn1, logger, "UPDATE t SET counter = counter + 1 WHERE id = $1", 1, &attempts, &sessions)
+	}()
+	go func() {
+		defer wg.Done()
+		errs[1] = runChurn(ctx, conn2, logger, "UPDATE t SET counter = counter + 1 WHERE id = $1", 2, &attempts, &sessions)
+	}()
+	wg.Wait()
+
+	assert.Error(t, errs[0])
+	assert.Error(t, errs[1])
+	assert.Equal(t, int64(0), attempts.Load())
+	// Init-error path must NOT decrement sessions.
+	assert.Equal(t, int64(2), sessions.Load())
+}
+
 func Test_runReporter(t *testing.T) {
 	// runReporter prints the report panel each ReportInterval, reading only the atomic
 	// counters. Drive it for a tick against controlled counters and assert the panel
@@ -302,9 +449,15 @@ func TestWorkload_Run_jobsHonored(t *testing.T) {
 }
 
 func TestWorkload_Run_sharedContention(t *testing.T) {
-	// With HotRows < Jobs, multiple sessions hammer the SAME hot row. Poll counter of
-	// id=1: it must climb under load — proof that sessions SHARE rows (central
-	// correctness concern, ADR-003-2), not spread over disjoint rows.
+	// Central correctness concern (ADR-003-2): prove that MULTIPLE LIVE SESSIONS SHARE the
+	// hot rows, not merely that "a counter grows" (a single worker would satisfy that too).
+	// HotRows=2, Jobs=4 forces two workers onto each of id=1 and id=2 via (i mod HotRows)+1.
+	// We require BOTH id=1 and id=2 counters to climb AT THE MOMENT >= Jobs 'noisia' backends
+	// are concurrently live — so the climbing counters are attributed to many shared sessions,
+	// not one worker and not a disjoint partition.
+	const jobs = 4
+	const hotRows = 2
+
 	obs, err := db.Connect(context.Background(), db.TestConninfo)
 	assert.NoError(t, err)
 	defer func() { _ = obs.Close() }()
@@ -312,8 +465,8 @@ func TestWorkload_Run_sharedContention(t *testing.T) {
 
 	config := Config{
 		Conninfo:       db.TestConninfo,
-		Jobs:           4,
-		HotRows:        1, // single hot row -> all sessions share it
+		Jobs:           jobs,
+		HotRows:        hotRows, // fewer rows than jobs -> sessions share each row
 		ReportInterval: 100 * time.Millisecond,
 	}
 
@@ -338,15 +491,26 @@ func TestWorkload_Run_sharedContention(t *testing.T) {
 	assert.NotEmpty(t, table, "seed table must appear")
 	tableIdent := "\"" + table + "\""
 
-	// Poll the counter of the single hot row id=1: it must strictly grow under load.
-	var first, last int64
+	// Bounded poll-loop: capture the FIRST observed counter for each shared row, then wait
+	// for BOTH to strictly grow while at least Jobs 'noisia' backends are concurrently live.
+	// grew==true only when both rows climbed under >= Jobs live sessions.
+	var first1, first2, last1, last2 int64
+	var backendsDuringGrowth int
+	grew := false
 	for i := 0; i < 200; i++ {
-		c := hotRowCounter(t, obs, tableIdent)
-		if first == 0 && c > 0 {
-			first = c
+		c1 := hotRowCounterID(t, obs, tableIdent, 1)
+		c2 := hotRowCounterID(t, obs, tableIdent, 2)
+		if first1 == 0 && c1 > 0 {
+			first1 = c1
 		}
-		if first > 0 && c > first {
-			last = c
+		if first2 == 0 && c2 > 0 {
+			first2 = c2
+		}
+		n := countNoisiaBackends(t, obs)
+		if first1 > 0 && first2 > 0 && c1 > first1 && c2 > first2 && n >= jobs {
+			last1, last2 = c1, c2
+			backendsDuringGrowth = n
+			grew = true
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -354,8 +518,21 @@ func TestWorkload_Run_sharedContention(t *testing.T) {
 	cancel()
 	assert.NoError(t, <-done)
 
-	assert.Greater(t, first, int64(0), "the shared hot row counter must have been incremented")
-	assert.Greater(t, last, first, "the shared hot row counter must climb under multiple sessions")
+	if !grew {
+		t.Fatalf("shared-row counters did not both grow under >= %d live backends within window "+
+			"(first id=1=%d, first id=2=%d, last n='noisia' backends seen); expected both shared rows "+
+			"to climb while multiple sessions share them", jobs, first1, first2)
+	}
+
+	// Both shared rows were incremented and both climbed — proof workers share the foci.
+	assert.Greater(t, first1, int64(0), "shared hot row id=1 must have been incremented")
+	assert.Greater(t, first2, int64(0), "shared hot row id=2 must have been incremented")
+	assert.Greater(t, last1, first1, "shared hot row id=1 counter must climb under multiple sessions")
+	assert.Greater(t, last2, first2, "shared hot row id=2 counter must climb under multiple sessions")
+	// The climbing counters are attributed to >= Jobs concurrently-live sessions sharing the
+	// rows, not to a single worker or a disjoint partition.
+	assert.GreaterOrEqual(t, backendsDuringGrowth, jobs,
+		"at least Jobs live 'noisia' backends must share the hot rows while their counters climb")
 }
 
 func TestWorkload_Run_cleanupOnExit(t *testing.T) {
@@ -467,10 +644,10 @@ func countRows(t *testing.T, conn db.Conn, tableIdent string) int {
 	return n
 }
 
-// hotRowCounter returns the counter value of the hot row id=1.
-func hotRowCounter(t *testing.T, conn db.Conn, tableIdent string) int64 {
+// hotRowCounterID returns the counter value of the given hot row id.
+func hotRowCounterID(t *testing.T, conn db.Conn, tableIdent string, id int) int64 {
 	t.Helper()
-	rows, err := conn.Query(context.Background(), "SELECT counter FROM "+tableIdent+" WHERE id = 1")
+	rows, err := conn.Query(context.Background(), "SELECT counter FROM "+tableIdent+" WHERE id = $1", id)
 	assert.NoError(t, err)
 	defer rows.Close()
 	var n int64
