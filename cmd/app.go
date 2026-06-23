@@ -6,6 +6,7 @@ import (
 	"github.com/lesovsky/noisia/deadlocks"
 	"github.com/lesovsky/noisia/failconns"
 	"github.com/lesovsky/noisia/forkconns"
+	"github.com/lesovsky/noisia/hotrowcontention"
 	"github.com/lesovsky/noisia/idlexacts"
 	"github.com/lesovsky/noisia/log"
 	"github.com/lesovsky/noisia/rollbacks"
@@ -19,50 +20,53 @@ import (
 )
 
 type config struct {
-	logger                      log.Logger
-	postgresConninfo            string
-	jobs                        uint16 // max 65535
-	duration                    time.Duration
-	idleXacts                   bool
-	idleXactsNaptimeMin         time.Duration
-	idleXactsNaptimeMax         time.Duration
-	rollbacks                   bool
-	rollbacksRate               float64
-	waitXacts                   bool
-	waitXactsFixture            bool
-	waitXactsLocktimeMin        time.Duration
-	waitXactsLocktimeMax        time.Duration
-	deadlocks                   bool
-	tempFiles                   bool
-	tempFilesRate               float64
-	terminate                   bool
-	terminateInterval           time.Duration
-	terminateRate               uint16
-	terminateSoftMode           bool
-	terminateIgnoreSystem       bool
-	terminateClientAddr         string
-	terminateUser               string
-	terminateDatabase           string
-	terminateAppName            string
-	failconns                   bool
-	forkconns                   bool
-	forkconnsRate               uint16
-	backendKiller               bool
-	backendKillerRate           float64
-	backendKillerPlanSize       int
-	backendKillerShowMemory     bool
-	backendKillerReportInterval time.Duration
-	slotBloat                   bool
-	slotBloatRate               float64
-	slotBloatRows               int
-	slotBloatPayloadBytes       int
-	slotBloatReportInterval     time.Duration
-	slotBloatKeepSlot           bool
-	walFlood                    bool
-	walFloodRate                float64
-	walFloodRows                int
-	walFloodPayloadBytes        int
-	walFloodReportInterval      time.Duration
+	logger                         log.Logger
+	postgresConninfo               string
+	jobs                           uint16 // max 65535
+	duration                       time.Duration
+	idleXacts                      bool
+	idleXactsNaptimeMin            time.Duration
+	idleXactsNaptimeMax            time.Duration
+	rollbacks                      bool
+	rollbacksRate                  float64
+	waitXacts                      bool
+	waitXactsFixture               bool
+	waitXactsLocktimeMin           time.Duration
+	waitXactsLocktimeMax           time.Duration
+	deadlocks                      bool
+	tempFiles                      bool
+	tempFilesRate                  float64
+	terminate                      bool
+	terminateInterval              time.Duration
+	terminateRate                  uint16
+	terminateSoftMode              bool
+	terminateIgnoreSystem          bool
+	terminateClientAddr            string
+	terminateUser                  string
+	terminateDatabase              string
+	terminateAppName               string
+	failconns                      bool
+	forkconns                      bool
+	forkconnsRate                  uint16
+	backendKiller                  bool
+	backendKillerRate              float64
+	backendKillerPlanSize          int
+	backendKillerShowMemory        bool
+	backendKillerReportInterval    time.Duration
+	slotBloat                      bool
+	slotBloatRate                  float64
+	slotBloatRows                  int
+	slotBloatPayloadBytes          int
+	slotBloatReportInterval        time.Duration
+	slotBloatKeepSlot              bool
+	walFlood                       bool
+	walFloodRate                   float64
+	walFloodRows                   int
+	walFloodPayloadBytes           int
+	walFloodReportInterval         time.Duration
+	hotRowContention               bool
+	hotRows                        uint
+	hotRowContentionReportInterval time.Duration
 }
 
 func runApplication(ctx context.Context, c config, log log.Logger) error {
@@ -198,6 +202,18 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 			err := startWalFloodWorkload(ctx, c, log)
 			if err != nil {
 				log.Errorf("wal-flood workload failed: %s", err)
+			}
+			wg.Done()
+		}()
+	}
+
+	if c.hotRowContention {
+		log.Info("start hot-row-contention workload")
+		wg.Add(1)
+		go func() {
+			err := startHotRowContentionWorkload(ctx, c, log)
+			if err != nil {
+				log.Errorf("hot-row-contention workload failed: %s", err)
 			}
 			wg.Done()
 		}()
@@ -362,6 +378,38 @@ func startWalFloodWorkload(ctx context.Context, c config, logger log.Logger) err
 			PayloadBytes:   c.walFloodPayloadBytes,
 			ReportInterval: c.walFloodReportInterval,
 			Jobs:           c.jobs,
+		}, logger,
+	)
+	if err != nil {
+		return err
+	}
+
+	return workload.Run(ctx)
+}
+
+// resolveHotRows resolves the hot-rows default. The --hot-rows flag uses a sentinel
+// default of 0 meaning "not set": kingpin cannot express a default derived from --jobs,
+// so when hotRows is 0 the default max(1, jobs/10) is computed here; otherwise the
+// explicit value is passed through. Validation (HotRows >= 1, Jobs >= 2*HotRows) is the
+// hotrowcontention package's responsibility.
+func resolveHotRows(hotRows uint, jobs uint16) int {
+	if hotRows != 0 {
+		return int(hotRows)
+	}
+
+	if d := int(jobs) / 10; d > 1 {
+		return d
+	}
+	return 1
+}
+
+func startHotRowContentionWorkload(ctx context.Context, c config, logger log.Logger) error {
+	workload, err := hotrowcontention.NewWorkload(
+		hotrowcontention.Config{
+			Conninfo:       c.postgresConninfo,
+			Jobs:           c.jobs,
+			HotRows:        resolveHotRows(c.hotRows, c.jobs),
+			ReportInterval: c.hotRowContentionReportInterval,
 		}, logger,
 	)
 	if err != nil {
