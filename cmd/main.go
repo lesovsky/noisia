@@ -65,6 +65,8 @@ func main() {
 		hotRowContention               = kingpin.Flag("hot-row-contention", "Run hot-row-contention workload").Default("false").Envar("NOISIA_HOT_ROW_CONTENTION").Bool()
 		hotRows                        = kingpin.Flag("hot-rows", "Number of hot rows (K); 0 = auto default max(1, jobs/10)").Default("0").Envar("NOISIA_HOT_ROWS").Uint()
 		hotRowContentionReportInterval = kingpin.Flag("hot-row-contention.report-interval", "Escalation panel print cadence").Default("1s").Envar("NOISIA_HOT_ROW_CONTENTION_REPORT_INTERVAL").Duration()
+		seqscanStorm                   = kingpin.Flag("seqscan-storm", "Run seqscan-storm workload").Default("false").Envar("NOISIA_SEQSCAN_STORM").Bool()
+		seqscanStormTableSize          = kingpin.Flag("seqscan-storm.table-size", "Seed table size, base-2 (500MB = 500 MiB = 524288000 bytes; lowercase kB rejected). Large tables warm up via a full scan that can consume a short --duration budget — set --duration generously.").Default("500MB").Envar("NOISIA_SEQSCAN_STORM_TABLE_SIZE").Bytes()
 	)
 	kingpin.Parse()
 
@@ -123,6 +125,8 @@ func main() {
 		hotRowContention:               *hotRowContention,
 		hotRows:                        *hotRows,
 		hotRowContentionReportInterval: *hotRowContentionReportInterval,
+		seqscanStorm:                   *seqscanStorm,
+		seqscanStormTableSize:          int64(*seqscanStormTableSize),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

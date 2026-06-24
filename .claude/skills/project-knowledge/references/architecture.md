@@ -44,6 +44,7 @@ The repo is a Go module (`github.com/lesovsky/noisia`) with one package per work
 ├── slotbloat/         [workload: un-consumed physical replication slot pins WAL → pg_wal fills disk → instance PANIC]
 ├── walflood/          [workload: --jobs parallel UPDATE-churn workers over disjoint ranges flood WAL → replication lag / disk-full]
 ├── hotrowcontention/  [workload: --jobs workers share K hot rows (inverse of walflood) → row-lock/buffer_content contention → CPU saturation / TPS collapse]
+├── seqscanstorm/      [workload: --jobs workers full-scan an un-indexed table (count(*) WHERE payload=0) → forced Seq Scan → CPU saturation; brute-force counterpart to hotrowcontention]
 ├── Dockerfile         [multi-stage build → scratch image]
 ├── Makefile           [dep/lint/test/build/docker targets]
 └── .github/workflows/ [CI: default.yml (lint+test), release.yml (test+docker+goreleaser)]

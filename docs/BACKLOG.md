@@ -104,6 +104,12 @@ Each entry below is sized to be expanded into a user-spec.
 - **Self-report:** queries issued, rows scanned, uptime.
 - **Symptoms to teach:** CPU/IO saturation, buffer cache churn, plan-driven meltdown.
 - **Remediation discussion:** EXPLAIN, pg_stat_statements, indexing, `statement_timeout`.
+- **Status:** implemented (005-feat-seqscan-storm). Pure seq-scan variant: `--jobs` workers loop
+  `count(*) WHERE payload = 0` over an un-indexed `(id PK, payload)` table; `max_parallel_workers_per_gather=0`
+  per worker (skip-on-failure); best-effort cache warm-up; one-time `pg_relation_size`; self-reports logical
+  bytes scanned. CPU-bound contract (IO is an optional consequence of a large `--table-size`); degradation,
+  not instance death. Verified by unit + testcontainers integration (EXPLAIN proves Seq Scan, `seq_scan`
+  growth, parallel-off, warm-up, jobs, cleanup); real CPU saturation is a manual stand demo, not CI.
 
 ## Priority 4 — IO → 100%
 
