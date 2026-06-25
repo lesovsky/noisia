@@ -120,7 +120,15 @@ Each entry below is sized to be expanded into a user-spec.
 - **Symptoms to teach:** periodic IO stalls, latency spikes correlated with checkpoints.
 - **Remediation discussion:** checkpoint tuning, `checkpoint_completion_target`,
   storage throughput.
-- **Notes:** evaluate merging with `wal-flood`.
+- **Status:** implemented (006-feat-checkpoint-storm). Scattered random-id `UPDATE` churn (`--jobs` workers,
+  per-worker connection) + a single serial **forcer** issuing a synchronous `CHECKPOINT` on a rows-based
+  `--dirty-pct` trigger; cadence set by the forcer, **not** `max_wal_size` (kept separate from `wal-flood` per
+  ADR-003-2, ADR-006-1). Panel: `dirtied=<bytes> checkpoints=<N> (<M>/min) flush=<T> elapsed=<Z>`.
+  CHECKPOINT-privilege precondition (superuser or `pg_checkpoint`, honest startup fail; **not** managed
+  PostgreSQL). Honest contract: degradation, not death — the sawtooth is observed externally
+  (pgcenter/iostat), never in noisia's log. Verified by unit + testcontainers integration (`checkpoints_req`
+  growth, scattered UPDATEs, privilege gate fails fast under a non-superuser role, jobs honored, cleanup);
+  real sawtooth is a manual stand demo, not CI.
 
 ---
 
