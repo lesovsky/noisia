@@ -126,8 +126,9 @@ Both workloads write to the DB and load the disk, so juniors confuse them. The d
 - **`checkpoint-storm` — fsync/flush pressure.** The cost is **flushing dirty buffers** at checkpoint time over
   many scattered pages. To see it, watch **`buffers_checkpoint` / checkpoint activity** and the **iostat
   `%util`** sawtooth correlated with checkpoints.
-- **`wal-flood` — WAL generation volume.** The cost is the **rate of WAL written** by churn over a tight hot
-  set. To see it, watch the **WAL rate** and, with a standby attached, **`pg_stat_replication`** lag.
+- **`wal-flood` — WAL generation volume.** The cost is the **rate of WAL written** by churn over **disjoint
+  id ranges** (cheap in-place flush, but high WAL volume). To see it, watch the **WAL rate** and, with a
+  standby attached, **`pg_stat_replication`** lag.
 
 In pgcenter: if the pain tracks **checkpoint buffers and the checkpoint cadence**, it is `checkpoint-storm`; if
 it tracks **WAL throughput and replica lag**, it is `wal-flood`. (And `slot-bloat` is a third axis again —
