@@ -44,11 +44,18 @@ func TestWorkload_Run_checkpointsGrow(t *testing.T) {
 	defer func() { _ = obs.Close() }()
 	purgeChkptstorm(t, obs) // clean slate so discover cannot pick up an orphan table
 
+	// PayloadBytes is pinned to 8192 here (not the small 8 used by the other tests):
+	// the payload-aware rows estimate then yields a small row count (~8158), so the
+	// 5%-of-rows forcer threshold (~407 single-row UPDATEs) is crossed in well under
+	// a second. With a tiny payload the table seeds ~1.67M rows and needs ~84k
+	// UPDATEs per forced CHECKPOINT — fine on fast local Docker but a plausible flake
+	// on a loaded CI container within the post-baseline poll budget. The proof (strict
+	// increase of checkpoints_req) is unchanged; a larger payload only seeds fewer rows.
 	config := Config{
 		Conninfo:       db.TestConninfo,
 		TableSize:      minTableSize,
 		DirtyPct:       minDirtyPct,
-		PayloadBytes:   8,
+		PayloadBytes:   8192,
 		ReportInterval: 200 * time.Millisecond,
 		Jobs:           3,
 	}
@@ -183,7 +190,7 @@ func TestWorkload_Run_privilegePreconditionFailsFast(t *testing.T) {
 
 	err = w.Run(ctx)
 	assert.Error(t, err, "Run under a role without CHECKPOINT privilege must fail")
-	assert.Contains(t, err.Error(), "CHECKPOINT", "the error must name the missing CHECKPOINT privilege")
+	assert.Contains(t, err.Error(), "pg_checkpoint", "the error must name the missing pg_checkpoint privilege (stable role name, resilient to wording changes)")
 	assert.NotContains(t, err.Error(), "SENTINEL_SECRET", "the privilege error must not leak the DSN")
 
 	// The gate fires BEFORE seeding: no table must have been created (read on the
