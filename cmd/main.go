@@ -67,6 +67,12 @@ func main() {
 		hotRowContentionReportInterval = kingpin.Flag("hot-row-contention.report-interval", "Escalation panel print cadence").Default("1s").Envar("NOISIA_HOT_ROW_CONTENTION_REPORT_INTERVAL").Duration()
 		seqscanStorm                   = kingpin.Flag("seqscan-storm", "Run seqscan-storm workload").Default("false").Envar("NOISIA_SEQSCAN_STORM").Bool()
 		seqscanStormTableSize          = kingpin.Flag("seqscan-storm.table-size", "Seed table size, base-2 (500MB = 500 MiB = 524288000 bytes; lowercase kB rejected). Large tables warm up via a full scan that can consume a short --duration budget — set --duration generously.").Default("500MB").Envar("NOISIA_SEQSCAN_STORM_TABLE_SIZE").Bytes()
+		checkpointStorm                = kingpin.Flag("checkpoint-storm", "Run checkpoint-storm workload").Default("false").Envar("NOISIA_CHECKPOINT_STORM").Bool()
+		checkpointStormTableSize       = kingpin.Flag("checkpoint-storm.table-size", "Seed table size, base-2 (1GB = 1 GiB = 1073741824 bytes; lowercase kB rejected). Larger tables accumulate more dirty pages before each forced CHECKPOINT, so seeding can consume part of a short --duration budget — set --duration generously.").Default("1GB").Envar("NOISIA_CHECKPOINT_STORM_TABLE_SIZE").Bytes()
+		checkpointStormDirtyPct        = kingpin.Flag("checkpoint-storm.dirty-pct", "Percentage of rows dirtied before a synchronous CHECKPOINT is forced").Default("25").Envar("NOISIA_CHECKPOINT_STORM_DIRTY_PCT").Int()
+		checkpointStormPayloadBytes    = kingpin.Flag("checkpoint-storm.payload-bytes", "Payload bytes written per UPDATE (K)").Default("8192").Envar("NOISIA_CHECKPOINT_STORM_PAYLOAD_BYTES").Int()
+		checkpointStormRate            = kingpin.Flag("checkpoint-storm.rate", "UPDATE rate per second per worker; 0 means unlimited").Default("0").Envar("NOISIA_CHECKPOINT_STORM_RATE").Float64()
+		checkpointStormReportInterval  = kingpin.Flag("checkpoint-storm.report-interval", "Escalation panel print cadence").Default("1s").Envar("NOISIA_CHECKPOINT_STORM_REPORT_INTERVAL").Duration()
 	)
 	kingpin.Parse()
 
@@ -127,6 +133,12 @@ func main() {
 		hotRowContentionReportInterval: *hotRowContentionReportInterval,
 		seqscanStorm:                   *seqscanStorm,
 		seqscanStormTableSize:          int64(*seqscanStormTableSize),
+		checkpointStorm:                *checkpointStorm,
+		checkpointStormTableSize:       int64(*checkpointStormTableSize),
+		checkpointStormDirtyPct:        *checkpointStormDirtyPct,
+		checkpointStormPayloadBytes:    *checkpointStormPayloadBytes,
+		checkpointStormRate:            *checkpointStormRate,
+		checkpointStormReportInterval:  *checkpointStormReportInterval,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
