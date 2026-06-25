@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"github.com/lesovsky/noisia/backendkiller"
+	"github.com/lesovsky/noisia/checkpointstorm"
 	"github.com/lesovsky/noisia/deadlocks"
 	"github.com/lesovsky/noisia/failconns"
 	"github.com/lesovsky/noisia/forkconns"
@@ -70,6 +71,12 @@ type config struct {
 	hotRowContentionReportInterval time.Duration
 	seqscanStorm                   bool
 	seqscanStormTableSize          int64
+	checkpointStorm                bool
+	checkpointStormTableSize       int64
+	checkpointStormDirtyPct        int
+	checkpointStormPayloadBytes    int
+	checkpointStormRate            float64
+	checkpointStormReportInterval  time.Duration
 }
 
 func runApplication(ctx context.Context, c config, log log.Logger) error {
@@ -229,6 +236,18 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 			err := startSeqscanStormWorkload(ctx, c, log)
 			if err != nil {
 				log.Errorf("seqscan-storm workload failed: %s", err)
+			}
+			wg.Done()
+		}()
+	}
+
+	if c.checkpointStorm {
+		log.Info("start checkpoint-storm workload")
+		wg.Add(1)
+		go func() {
+			err := startCheckpointStormWorkload(ctx, c, log)
+			if err != nil {
+				log.Errorf("checkpoint-storm workload failed: %s", err)
 			}
 			wg.Done()
 		}()
@@ -440,6 +459,25 @@ func startSeqscanStormWorkload(ctx context.Context, c config, logger log.Logger)
 			Conninfo:  c.postgresConninfo,
 			TableSize: c.seqscanStormTableSize,
 			Jobs:      c.jobs,
+		}, logger,
+	)
+	if err != nil {
+		return err
+	}
+
+	return workload.Run(ctx)
+}
+
+func startCheckpointStormWorkload(ctx context.Context, c config, logger log.Logger) error {
+	workload, err := checkpointstorm.NewWorkload(
+		checkpointstorm.Config{
+			Conninfo:       c.postgresConninfo,
+			TableSize:      c.checkpointStormTableSize,
+			DirtyPct:       c.checkpointStormDirtyPct,
+			PayloadBytes:   c.checkpointStormPayloadBytes,
+			Rate:           c.checkpointStormRate,
+			ReportInterval: c.checkpointStormReportInterval,
+			Jobs:           c.jobs,
 		}, logger,
 	)
 	if err != nil {
