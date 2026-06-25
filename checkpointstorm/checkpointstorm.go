@@ -17,10 +17,9 @@
 // table is dropped on a fresh connection at exit. Workload duration is controlled by a
 // context created outside and passed to Run.
 //
-// This file currently provides the package foundation: Config/validate, the startup
-// CHECKPOINT-privilege check, the seed prepare path, the size→rows estimate, and cleanup.
-// The escalation engine (Run, scattered-churn workers, the serial CHECKPOINT forcer, and
-// the reporter) is added by a follow-up task.
+// Run orchestrates the engine: seed the table, fan out the scattered-churn workers, run
+// the single serial CHECKPOINT forcer on its own connection, and tick the self-report
+// panel — all under one ctx, with cleanup on a fresh connection at exit.
 package checkpointstorm
 
 import (
@@ -28,11 +27,14 @@ import (
 	"fmt"
 	"math/rand"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lesovsky/noisia"
 	"github.com/lesovsky/noisia/db"
 	"github.com/lesovsky/noisia/log"
+	"golang.org/x/time/rate"
 )
 
 const (
@@ -141,12 +143,368 @@ func NewWorkload(config Config, logger log.Logger) (noisia.Workload, error) {
 	return &workload{config: config, logger: logger}, nil
 }
 
-// Run is the workload entry point required by noisia.Workload. The escalation engine
-// (seed, privilege gate, scattered-churn workers, the serial CHECKPOINT forcer, and the
-// reporter) is implemented by a follow-up task; this foundation provides only the
-// building blocks it composes.
+// forcerSleep is the poll interval the forcer sleeps between checks of sinceCheckpoint
+// while below the trigger threshold, so it never busy-spins a core (Decision 4). It is a
+// var (not a const) solely so tests can keep the below-threshold window short; production
+// never reassigns it.
+var forcerSleep = time.Millisecond
+
+// Run opens a dedicated seed connection, sets application_name, verifies the CHECKPOINT
+// privilege (honest startup error if absent — the workload does not start and no table is
+// created), seeds the (id bigint PK, payload bytea) table, then fans out Jobs scattered
+// random-id UPDATE workers (each on its own db.Connect, ADR-003-1) while a single serial
+// forcer goroutine — on its own connection — issues a synchronous CHECKPOINT whenever the
+// accumulated dirty-row count crosses the rows-based trigger. A ticker reporter prints the
+// self-report panel from atomics only. The seed table is dropped in a defer on a fresh
+// context.Background() (ctx is already cancelled at exit, ADR-002-2). The only stop
+// mechanism is the supplied ctx.
 func (w *workload) Run(ctx context.Context) error {
-	return fmt.Errorf("checkpoint-storm: workload engine not implemented yet")
+	conn, err := db.Connect(ctx, w.config.Conninfo)
+	if err != nil {
+		// Never echo the raw error: it may carry DSN fragments (e.g. password=…).
+		return fmt.Errorf("connect to target failed: %s", sanitize(err))
+	}
+	defer func() { _ = conn.Close() }()
+
+	// Attribute the seeding backend in pg_stat_activity. db.Connect (unlike the pool path)
+	// does not set application_name, so set it locally here.
+	_, _, err = conn.Exec(ctx, "SET application_name = 'noisia'")
+	if err != nil {
+		return fmt.Errorf("set application_name failed: %s", sanitize(err))
+	}
+
+	// Functional gate (Decision 3, ADR-005-1): if the connecting role may not issue
+	// CHECKPOINT, fail honestly at startup BEFORE creating any table — the workload does
+	// not start.
+	if err := checkCheckpointPrivilege(ctx, conn); err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return err
+	}
+
+	// Build the per-run table name once. The suffix is restricted to [a-z0-9], which alone
+	// makes the identifier injection-safe; double-quoting is belt-and-suspenders. The
+	// identifier (which cannot be a bind parameter) is reused verbatim in CREATE/UPDATE/DROP;
+	// payload and id are bind args.
+	w.tableIdent = "\"noisia_chkptstorm_" + randomSuffix(8) + "\""
+
+	// Cleanup is registered right after the privilege gate passes and BEFORE seeding so a
+	// mid-seed cancel still drops the partial table. It runs on a fresh context.Background()
+	// because ctx is already cancelled at exit and a drop on a cancelled ctx would fail
+	// (ADR-002-2).
+	defer w.cleanup(w.tableIdent)
+
+	// Startup line: intent + table + target size + dirty-pct + where to watch the IO.
+	w.logger.Infof("checkpoint-storm: %d workers churning %s (target %s), forcing CHECKPOINT every %d%% dirty — watch checkpoint IO (pgcenter buffers_checkpoint / iostat %%util)",
+		w.config.Jobs, w.tableIdent, formatBytes(w.config.TableSize), w.config.DirtyPct)
+
+	// Seed the large heap churned in place. Seeding a multi-hundred-MiB table is slow and the
+	// reporter starts only after it, so emit explicit feedback.
+	w.rows = rowsForSize(w.config.TableSize, int64(w.config.PayloadBytes))
+	w.logger.Infof("checkpoint-storm: seeding %d rows (~%s), this may take a while...", w.rows, formatBytes(w.config.TableSize))
+	err = prepare(ctx, conn, w.tableIdent, w.rows, w.config.PayloadBytes)
+	if err != nil {
+		// A clean ctx stop must not be reported as a failure.
+		if ctx.Err() != nil {
+			return nil
+		}
+		return fmt.Errorf("seed table failed: %s", sanitize(err))
+	}
+
+	// Shared runtime atomics, read by the reporter — never a Conn (ADR-002-3). dirtied is
+	// successful UPDATEs × PayloadBytes (panel bytes); sinceCheckpoint is UPDATEs since the
+	// last checkpoint (forcer trigger), incremented by workers and decremented by the forcer;
+	// checkpoints is the total forced checkpoints; flushNanos is the last CHECKPOINT call
+	// duration; sessions is the live-worker count (degradation accounting, not in the panel).
+	var dirtied, sinceCheckpoint, checkpoints, flushNanos, sessions atomic.Int64
+
+	start := time.Now()
+	tickerDone := make(chan struct{})
+	var reporterWg sync.WaitGroup
+	reporterWg.Add(1)
+	go func() {
+		defer reporterWg.Done()
+		runReporter(ctx, tickerDone, start, w.config.ReportInterval, w.logger, &dirtied, &checkpoints, &flushNanos)
+	}()
+
+	// Launch the single serial forcer on its OWN connection (Decision 4). Its death is a
+	// degradation, not a Run failure (Decision 5), so it runs under its own WaitGroup and its
+	// outcome never enters the worker "zero live = error" rule.
+	threshold := forcerThreshold(w.config.DirtyPct, w.rows)
+	var forcerWg sync.WaitGroup
+	forcerWg.Add(1)
+	go func() {
+		defer forcerWg.Done()
+		w.runForcerWorker(ctx, threshold, &sinceCheckpoint, &checkpoints, &flushNanos)
+	}()
+
+	// Fan out exactly Jobs scattered-churn workers, each on its own connection (ADR-003-1).
+	// The table identifier (which cannot be a bind parameter) is interpolated; payload is
+	// bound as $1 and the random id as $2.
+	updateSQL := fmt.Sprintf("UPDATE %s SET payload = $1 WHERE id = $2", w.tableIdent)
+
+	var wg sync.WaitGroup
+	errs := make([]error, w.config.Jobs)
+	wg.Add(int(w.config.Jobs))
+	for i := 0; i < int(w.config.Jobs); i++ {
+		go func(idx int) {
+			defer wg.Done()
+			errs[idx] = w.runWorker(ctx, updateSQL, &dirtied, &sinceCheckpoint, &sessions)
+		}(i)
+	}
+	wg.Wait()
+
+	// Workers have all returned (ctx cancelled or every worker died); stop the forcer and the
+	// reporter.
+	forcerWg.Wait()
+	close(tickerDone)
+	reporterWg.Wait()
+
+	// Surface the first init error (a real setup defect — e.g. exhausted connections) reported
+	// by any worker; a degraded run (>=1 worker alive) or a clean stop leaves all errs nil —
+	// Run errors only when ZERO workers were ever live. The forcer is NOT in this rule.
+	for _, e := range errs {
+		if e != nil {
+			return e
+		}
+	}
+
+	return nil
+}
+
+// forcerThreshold computes the rows-based dirty trigger: max(1, DirtyPct/100 × rows)
+// (Decision 2). The max(1, …) floor prevents a degenerate threshold of 0 (which would make
+// the forcer fire back-to-back no-op CHECKPOINTs); the validate() floors keep rows large
+// enough that the threshold is normally ≫ 1.
+func forcerThreshold(dirtyPct int, rows int64) int64 {
+	t := int64(dirtyPct) * rows / 100
+	if t < 1 {
+		return 1
+	}
+	return t
+}
+
+// runWorker opens its OWN dedicated connection and drives the scattered-churn loop. A
+// per-worker connection guarantees Jobs concurrent in-flight UPDATEs regardless of any pool
+// sizing (ADR-003-1). A failed connect degrades the run (Warn + nil) as long as another
+// worker is live; only when no worker was ever live (sessions == 0) is the sanitized init
+// error returned. Every connection error passes through sanitize so a pgx error can never
+// leak a DSN.
+func (w *workload) runWorker(ctx context.Context, updateSQL string, dirtied, sinceCheckpoint, sessions *atomic.Int64) error {
+	conn, err := db.Connect(ctx, w.config.Conninfo)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		if sessions.Load() > 0 {
+			w.logger.Warnf("checkpoint-storm: worker connect failed (degraded): %s", sanitize(err))
+			return nil
+		}
+		return fmt.Errorf("worker connect failed: %s", sanitize(err))
+	}
+	defer func() { _ = conn.Close() }()
+
+	return runWorkerWithConn(ctx, conn, w.logger, w.config, updateSQL, w.rows, dirtied, sinceCheckpoint, sessions)
+}
+
+// runWorkerWithConn drives the post-connect worker lifecycle over an already-open conn:
+// a best-effort SET application_name (a failed SET is cosmetic and does NOT abort the
+// worker — unlike seqscan-storm there is NO second functional determinism SET here), the
+// live-session increment, and the rate-limited scattered-UPDATE loop. It is split from
+// runWorker so the SET + churn logic can be unit-tested over a conn double without a live
+// database (runWorker itself only adds the db.Connect that needs a real server).
+//
+// Each statement targets a RANDOM id = rand.Int63n(rows)+1 (scattered across the whole
+// heap, Decision 6), bound as $2; payload is a fixed zero-filled buffer bound as $1. On
+// each successful UPDATE it adds PayloadBytes to dirtied and 1 to sinceCheckpoint.
+//
+// Returns nil on a clean ctx stop. On a UPDATE error under a live ctx after at least one
+// successful UPDATE anywhere (dirtied > 0), it logs a degradation warning, decrements
+// sessions EXACTLY once, and returns nil — the session was lost, not the run. The first
+// UPDATE error while dirtied is still 0 is returned as a sanitized init error.
+func runWorkerWithConn(ctx context.Context, conn db.Conn, logger log.Logger, config Config, updateSQL string, rows int64, dirtied, sinceCheckpoint, sessions *atomic.Int64) error {
+	// db.Connect does not set application_name; do it best-effort so the worker is
+	// attributable in pg_stat_activity. A failed SET must not abort the worker (it is
+	// cosmetic), but its error still passes through sanitize so the DSN is never logged.
+	if _, _, serr := conn.Exec(ctx, "SET application_name = 'noisia'"); serr != nil {
+		logger.Warnf("checkpoint-storm: set application_name failed: %s", sanitize(serr))
+	}
+
+	// Count this session as live exactly once, after the SET and before the churn loop.
+	sessions.Add(1)
+
+	lim := rate.Limit(config.Rate)
+	if config.Rate == 0 {
+		lim = rate.Inf
+	}
+	limiter := rate.NewLimiter(lim, 1)
+
+	payload := make([]byte, config.PayloadBytes)
+
+	for {
+		if err := limiter.Wait(ctx); err != nil {
+			// Wait only errors when ctx is done (or the limiter is misconfigured, which it is
+			// not here): a clean ctx stop, not a failure.
+			return nil
+		}
+
+		// Scattered dirtying: a random id over the whole table (Decision 6). Bound as $2.
+		id := rand.Int63n(rows) + 1
+		_, _, err := conn.Exec(ctx, updateSQL, payload, id)
+		if err != nil {
+			// A clean ctx stop must not be reported as a failure (and must not decrement).
+			if ctx.Err() != nil {
+				return nil
+			}
+
+			if dirtied.Load() > 0 {
+				// Mid-run loss of this session: degradation, not death of the run. Decrement
+				// the live session count exactly once and let the other workers carry on.
+				logger.Warnf("checkpoint-storm: worker lost connection: %s", sanitize(err))
+				sessions.Add(-1)
+				return nil
+			}
+
+			// First UPDATE failed with no prior success anywhere: setup defect.
+			return fmt.Errorf("churn update failed: %s", sanitize(err))
+		}
+
+		dirtied.Add(int64(config.PayloadBytes))
+		sinceCheckpoint.Add(1)
+
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+	}
+}
+
+// runForcerWorker owns the forcer's dedicated db.Connect and its one best-effort reconnect,
+// then runs the serial forcer loop. It is the connection-owning wrapper around the pure
+// runForcer loop (mirroring runWorker / runWorkerWithConn): runForcer is testable over a
+// conn double, while runForcerWorker holds the real db.Connect that needs a live server.
+//
+// The forcer is a singleton (Decision 4/5): its death is a degradation, not a Run failure,
+// so this function returns nothing. A failed initial connect under a live ctx is warned
+// (sanitized) and the forcer simply does not run — Run continues on the churn workers.
+func (w *workload) runForcerWorker(ctx context.Context, threshold int64, sinceCheckpoint, checkpoints, flushNanos *atomic.Int64) {
+	conn, err := db.Connect(ctx, w.config.Conninfo)
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		w.logger.Warnf("checkpoint-storm: forcer connect failed — checkpoint forcing stopped, storm degraded to plain churn: %s", sanitize(err))
+		return
+	}
+	defer func() { _ = conn.Close() }()
+
+	// Attribute the forcer backend in pg_stat_activity. Best-effort: a failed SET is cosmetic
+	// and must not stop the forcer, but its error still passes through sanitize.
+	if _, _, serr := conn.Exec(ctx, "SET application_name = 'noisia'"); serr != nil {
+		w.logger.Warnf("checkpoint-storm: forcer set application_name failed: %s", sanitize(serr))
+	}
+
+	reconnect := func(rctx context.Context) (db.Conn, error) { return db.Connect(rctx, w.config.Conninfo) }
+	_ = runForcer(ctx, conn, w.logger, threshold, sinceCheckpoint, checkpoints, flushNanos, reconnect)
+}
+
+// runForcer is the single serial forcer loop over an already-open conn (Decision 1/4). While
+// sinceCheckpoint is below the threshold it sleeps forcerSleep between polls (it never spins a
+// core); when sinceCheckpoint crosses the threshold it issues a synchronous CHECKPOINT
+// (conn.Exec(ctx, "CHECKPOINT"), no bind args), times the call client-side
+// (flushNanos.Store(int64(time.Since(t))), Decision 8), decrements sinceCheckpoint by the
+// observed threshold (Add(-threshold), NOT Store(0) — preserves read→reset-window increments,
+// Decision 2), and increments checkpoints. Checkpoints are strictly serial: the next trigger
+// is evaluated only after the current CHECKPOINT returns.
+//
+// On a CHECKPOINT error under a live ctx it makes ONE best-effort reconnect (via the supplied
+// reconnect func); if the reconnect fails it warns loudly ("checkpoint forcing stopped — storm
+// degraded to plain churn") and returns — the forcer exits but Run does NOT fail (Decision 5).
+// A clean ctx stop returns nil. Every error passes through sanitize.
+func runForcer(ctx context.Context, conn db.Conn, logger log.Logger, threshold int64, sinceCheckpoint, checkpoints, flushNanos *atomic.Int64, reconnect func(context.Context) (db.Conn, error)) error {
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+
+		if sinceCheckpoint.Load() < threshold {
+			// Below threshold: sleep a short interval between polls, not a busy-spin. The
+			// sleep is interruptible by ctx so shutdown is prompt.
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(forcerSleep):
+			}
+			continue
+		}
+
+		t := time.Now()
+		_, _, err := conn.Exec(ctx, "CHECKPOINT")
+		if err != nil {
+			// A clean ctx stop must not be reported as a failure.
+			if ctx.Err() != nil {
+				return nil
+			}
+
+			// Best-effort ONE reconnect; on failure the forcer degrades to plain churn and
+			// exits. Run does not fail because the singleton forcer died (Decision 5).
+			logger.Warnf("checkpoint-storm: CHECKPOINT failed, reconnecting: %s", sanitize(err))
+			if reconnect == nil {
+				logger.Warnf("checkpoint-storm: checkpoint forcing stopped — storm degraded to plain churn")
+				return nil
+			}
+			newConn, rerr := reconnect(ctx)
+			if rerr != nil {
+				logger.Warnf("checkpoint-storm: checkpoint forcing stopped — storm degraded to plain churn: %s", sanitize(rerr))
+				return nil
+			}
+			conn = newConn
+			continue
+		}
+
+		flushNanos.Store(int64(time.Since(t)))
+		// Decrement by the observed threshold, NOT Store(0): preserves any worker increments
+		// that landed between the read and the reset (Decision 2).
+		sinceCheckpoint.Add(-threshold)
+		checkpoints.Add(1)
+	}
+}
+
+// runReporter prints the self-report panel every interval, reading only the shared atomics.
+// It never queries a Conn (ADR-002-3). The panel is exactly
+// "checkpoint-storm: dirtied=<bytes> checkpoints=<N> (<M>/min) flush=<T> elapsed=<Z>": dirtied
+// via the GB-capped formatBytes (Decision 7), M/min = checkpoints / elapsed-minutes, flush the
+// last stored CHECKPOINT call duration (Decision 8). There is NO sessions field in the panel.
+func runReporter(ctx context.Context, done <-chan struct{}, start time.Time, interval time.Duration, logger log.Logger, dirtied, checkpoints, flushNanos *atomic.Int64) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-ticker.C:
+			elapsed := time.Since(start)
+			cps := checkpoints.Load()
+
+			// Guard division on the first sub-minute tick: scale by elapsed minutes, but never
+			// divide by ~0 (which would print +Inf).
+			minutes := elapsed.Minutes()
+			perMin := 0.0
+			if minutes > 0 {
+				perMin = float64(cps) / minutes
+			}
+
+			flush := time.Duration(flushNanos.Load())
+
+			logger.Infof("checkpoint-storm: dirtied=%s checkpoints=%d (%.1f/min) flush=%s elapsed=%s",
+				formatBytes(dirtied.Load()), cps, perMin, flush.Truncate(time.Millisecond), elapsed.Truncate(time.Second))
+		}
+	}
 }
 
 // rowsForSize converts a target byte size into a seed row count via a payload-aware
