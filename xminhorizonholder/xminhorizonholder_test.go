@@ -334,6 +334,11 @@ func Test_cleanup_warnsNamingTableOnConnectFailure(t *testing.T) {
 
 	joined := strings.Join(logger.warns(), "\n")
 	assert.Contains(t, joined, tableIdent, "cleanup warning must name the table for manual drop")
+	// The operator-log label must be this package's, never a leftover from the verbatim copy.
+	assert.Contains(t, joined, "xmin-horizon-holder:", "cleanup warning must carry the xmin-horizon-holder label")
+	assert.NotContains(t, joined, "checkpoint-storm:", "cleanup warning must not carry the copied checkpoint-storm label")
+	// A connect failure error must be sanitized: no conninfo fragment may leak into the warning.
+	assert.NotContains(t, joined, "127.0.0.1", "cleanup warning must not leak a DSN fragment")
 }
 
 func Test_NewWorkload(t *testing.T) {
