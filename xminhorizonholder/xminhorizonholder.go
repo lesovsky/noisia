@@ -331,7 +331,7 @@ func runHolder(ctx context.Context, conn db.Conn, logger log.Logger, heldSince, 
 			}
 			if eerr := establishHolder(ctx, newConn, heldSince); eerr != nil {
 				_ = newConn.Close()
-				logger.Warnf("xmin-horizon-holder: holder re-establish failed — xmin horizon no longer held: %s", eerr)
+				logger.Warnf("xmin-horizon-holder: holder re-establish failed — xmin horizon no longer held: %s", sanitize(eerr))
 				return nil
 			}
 

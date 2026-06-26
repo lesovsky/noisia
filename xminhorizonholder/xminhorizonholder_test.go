@@ -491,9 +491,9 @@ func Test_establishHolder_emitsOrderedStatements(t *testing.T) {
 }
 
 func Test_establishHolder_failsAtAnyStep(t *testing.T) {
-	// A failure at any establish step (BEGIN, SELECT 1, txid_current) must return an error so
-	// the mandatory-start gate holds and the workload does not start. heldSince must stay epoch.
-	steps := []string{"BEGIN ISOLATION LEVEL REPEATABLE READ", "SELECT 1", "SELECT txid_current()"}
+	// A failure at any establish step (SET, BEGIN, SELECT 1, txid_current) must return an error
+	// so the mandatory-start gate holds and the workload does not start. heldSince must stay epoch.
+	steps := []string{"SET application_name", "BEGIN ISOLATION LEVEL REPEATABLE READ", "SELECT 1", "SELECT txid_current()"}
 	for _, step := range steps {
 		t.Run(step, func(t *testing.T) {
 			conn := &stormConn{failOn: step, failErr: fmt.Errorf("boom at %s", step), okBefore: 0}
@@ -561,36 +561,67 @@ func Test_holderLoop_reconnectResetsHeldAndBumpsRestarts(t *testing.T) {
 }
 
 func Test_holderLoop_secondFailureWarnsAndExits(t *testing.T) {
-	// A drop whose reconnect fails (the second failure) logs a sanitized warning and the holder
-	// returns WITHOUT failing Run; holder-restarts must NOT be incremented on a failed reconnect.
+	// The second failure after a drop — whether the reconnect itself fails OR the reconnect
+	// succeeds but the re-establish on the fresh conn fails — logs a sanitized warning and the
+	// holder returns WITHOUT failing Run; holder-restarts must NOT be incremented in either case.
 	old := holderPingInterval
 	holderPingInterval = time.Millisecond
 	defer func() { holderPingInterval = old }()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	logger := &captureLogger{}
+	t.Run("reconnect fails", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		logger := &captureLogger{}
 
-	conn1 := &stormConn{
-		failOn:   "SELECT 1",
-		failErr:  fmt.Errorf("ping failed: password=SENTINEL_SECRET drop"),
-		okBefore: 0,
-	}
+		conn1 := &stormConn{
+			failOn:   "SELECT 1",
+			failErr:  fmt.Errorf("ping failed: password=SENTINEL_SECRET drop"),
+			okBefore: 0,
+		}
 
-	var heldSince, holderRestarts atomic.Int64
-	reconnects := 0
-	err := runHolder(ctx, conn1, logger, &heldSince, &holderRestarts, func(context.Context) (db.Conn, error) {
-		reconnects++
-		return nil, fmt.Errorf("reconnect failed: host=SENTINEL_SECRET refused")
+		var heldSince, holderRestarts atomic.Int64
+		reconnects := 0
+		err := runHolder(ctx, conn1, logger, &heldSince, &holderRestarts, func(context.Context) (db.Conn, error) {
+			reconnects++
+			return nil, fmt.Errorf("reconnect failed: host=SENTINEL_SECRET refused")
+		})
+
+		assert.NoError(t, err, "a dead holder degrades (returns nil), it does not fail Run")
+		assert.Equal(t, 1, reconnects, "the holder must attempt exactly one reconnect")
+		assert.Equal(t, int64(0), holderRestarts.Load(), "a failed reconnect must not count as a restart")
+
+		joined := strings.Join(logger.warns(), "\n")
+		assert.Contains(t, joined, "no longer held", "the degradation must be warned loudly")
+		assert.NotContains(t, joined, "SENTINEL_SECRET", "every holder warning must be sanitized")
 	})
 
-	assert.NoError(t, err, "a dead holder degrades (returns nil), it does not fail Run")
-	assert.Equal(t, 1, reconnects, "the holder must attempt exactly one reconnect")
-	assert.Equal(t, int64(0), holderRestarts.Load(), "a failed reconnect must not count as a restart")
+	t.Run("reconnect succeeds but re-establish fails", func(t *testing.T) {
+		// The reconnect returns a fresh conn, but its BEGIN fails with a DSN-bearing error: the
+		// holder must warn (sanitized) that the horizon is no longer held, return nil, and NOT
+		// bump holder-restarts.
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		logger := &captureLogger{}
 
-	joined := strings.Join(logger.warns(), "\n")
-	assert.Contains(t, joined, "no longer held", "the degradation must be warned loudly")
-	assert.NotContains(t, joined, "SENTINEL_SECRET", "every holder warning must be sanitized")
+		conn1 := &stormConn{failOn: "SELECT 1", failErr: fmt.Errorf("holder conn dropped"), okBefore: 0}
+		conn2 := &stormConn{failOn: "BEGIN", failErr: fmt.Errorf("begin failed: password=SENTINEL_SECRET reset"), okBefore: 0}
+
+		var heldSince, holderRestarts atomic.Int64
+		reconnects := 0
+		err := runHolder(ctx, conn1, logger, &heldSince, &holderRestarts, func(context.Context) (db.Conn, error) {
+			reconnects++
+			return conn2, nil
+		})
+
+		assert.NoError(t, err, "a failed re-establish degrades (returns nil), it does not fail Run")
+		assert.Equal(t, 1, reconnects, "the holder must attempt exactly one reconnect")
+		assert.Equal(t, int64(0), holderRestarts.Load(), "a failed re-establish must not count as a restart")
+		assert.Equal(t, int64(0), heldSince.Load(), "a failed re-establish must not set heldSince")
+
+		joined := strings.Join(logger.warns(), "\n")
+		assert.Contains(t, joined, "re-establish failed", "the degradation must be warned loudly")
+		assert.NotContains(t, joined, "SENTINEL_SECRET", "the re-establish warning must be sanitized")
+	})
 }
 
 func Test_runWorkerWithConn_scatteredUpdateLoop(t *testing.T) {
