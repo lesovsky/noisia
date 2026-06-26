@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -177,6 +178,14 @@ func (l *captureLogger) warns() []string {
 	defer l.mu.Unlock()
 	out := make([]string, len(l.warnLines))
 	copy(out, l.warnLines)
+	return out
+}
+
+func (l *captureLogger) infos() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]string, len(l.infoLines))
+	copy(out, l.infoLines)
 	return out
 }
 
@@ -376,4 +385,353 @@ func Test_NewWorkload(t *testing.T) {
 			assert.Nil(t, got, "rejected config must yield a nil workload")
 		})
 	}
+}
+
+// stormConn is a db.Conn double for the engine: it records the SQL of every Exec (the SET
+// application_name, the holder BEGIN/SELECT sequence, the holder liveness ping, the worker
+// UPDATE) together with its bind args, can be configured to fail a specific statement after
+// a number of successes, and self-cancels the context after stopAfter matching Execs so the
+// otherwise-unbounded loops terminate without relying on wall-clock. Adapted verbatim from
+// checkpointstorm's stormConn.
+type stormConn struct {
+	mu sync.Mutex
+
+	execs []recordedExec
+
+	// failOn: substring of an Exec SQL -> error returned once okBefore matching Execs have
+	// already succeeded. Lets a test drive "first UPDATE fails" or "ping fails".
+	failOn   string
+	failErr  error
+	okBefore int
+
+	// stopAfter: cancel ctx after this many Execs whose SQL contains stopSQL have run, so the
+	// loop exits cleanly. stopSQL == "" matches any Exec.
+	stopAfter int
+	stopSQL   string
+	cancel    context.CancelFunc
+}
+
+func (c *stormConn) Begin(ctx context.Context) (db.Tx, error) { panic("not implemented") }
+
+func (c *stormConn) Exec(ctx context.Context, sql string, args ...interface{}) (int64, string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.execs = append(c.execs, recordedExec{sql: sql, args: args})
+
+	if c.failOn != "" && strings.Contains(sql, c.failOn) {
+		// Count only the matching statement toward okBefore.
+		matched := 0
+		for _, e := range c.execs {
+			if strings.Contains(e.sql, c.failOn) {
+				matched++
+			}
+		}
+		if matched > c.okBefore {
+			return 0, "", c.failErr
+		}
+	}
+
+	if c.stopAfter > 0 && c.cancel != nil {
+		matched := 0
+		for _, e := range c.execs {
+			if c.stopSQL == "" || strings.Contains(e.sql, c.stopSQL) {
+				matched++
+			}
+		}
+		if matched >= c.stopAfter {
+			c.cancel()
+		}
+	}
+
+	return 0, "", nil
+}
+
+func (c *stormConn) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	panic("not implemented")
+}
+func (c *stormConn) Close() error { return nil }
+
+func (c *stormConn) recorded() []recordedExec {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]recordedExec, len(c.execs))
+	copy(out, c.execs)
+	return out
+}
+
+func Test_holderBeginSQL_isStaticLiteral(t *testing.T) {
+	// Decision 1: the holder snapshot is pinned via a raw BEGIN with a static isolation level
+	// literal — never assembled via fmt.Sprintf. CI is PG15-only, so a regression cannot be
+	// caught at runtime; catch it here by asserting the literal carries no format verb and the
+	// REPEATABLE READ isolation level.
+	for _, verb := range []string{"%s", "%v", "%d", "%q"} {
+		assert.NotContains(t, holderBeginSQL, verb, "holder BEGIN must be a static literal (no format verb %q)", verb)
+	}
+	assert.Equal(t, "BEGIN ISOLATION LEVEL REPEATABLE READ", holderBeginSQL,
+		"holder BEGIN must request the REPEATABLE READ isolation level")
+}
+
+func Test_establishHolder_emitsOrderedStatements(t *testing.T) {
+	// The holder establish sequence must issue exactly, in order: SET application_name, BEGIN
+	// ISOLATION LEVEL REPEATABLE READ (pins nothing yet), SELECT 1 (pins backend_xmin), SELECT
+	// txid_current() (pins backend_xid). heldSince must be set to a non-epoch value on success.
+	conn := &stormConn{}
+	var heldSince atomic.Int64
+
+	err := establishHolder(context.Background(), conn, &heldSince)
+	assert.NoError(t, err)
+
+	recorded := conn.recorded()
+	assert.Len(t, recorded, 4, "establish must issue exactly four statements in order")
+	assert.Equal(t, "SET application_name = 'noisia'", recorded[0].sql)
+	assert.Equal(t, "BEGIN ISOLATION LEVEL REPEATABLE READ", recorded[1].sql)
+	assert.Equal(t, "SELECT 1", recorded[2].sql)
+	assert.Equal(t, "SELECT txid_current()", recorded[3].sql)
+	assert.Greater(t, heldSince.Load(), int64(0), "heldSince must be set to a non-epoch value at the successful pin")
+}
+
+func Test_establishHolder_failsAtAnyStep(t *testing.T) {
+	// A failure at any establish step (BEGIN, SELECT 1, txid_current) must return an error so
+	// the mandatory-start gate holds and the workload does not start. heldSince must stay epoch.
+	steps := []string{"BEGIN ISOLATION LEVEL REPEATABLE READ", "SELECT 1", "SELECT txid_current()"}
+	for _, step := range steps {
+		t.Run(step, func(t *testing.T) {
+			conn := &stormConn{failOn: step, failErr: fmt.Errorf("boom at %s", step), okBefore: 0}
+			var heldSince atomic.Int64
+
+			err := establishHolder(context.Background(), conn, &heldSince)
+			assert.Error(t, err, "a failure at %s must return an error (mandatory start)", step)
+			assert.Equal(t, int64(0), heldSince.Load(), "heldSince must stay epoch when the pin fails")
+		})
+	}
+}
+
+func Test_establishHolder_sanitizesError(t *testing.T) {
+	// A holder step failing with a DSN-bearing error must return a sanitized error — the
+	// conninfo fragment must never leak into the returned/logged line (security finding).
+	conn := &stormConn{
+		failOn:   "BEGIN",
+		failErr:  fmt.Errorf("begin failed: password=SENTINEL_SECRET reset"),
+		okBefore: 0,
+	}
+	var heldSince atomic.Int64
+
+	err := establishHolder(context.Background(), conn, &heldSince)
+	assert.Error(t, err)
+	assert.NotContains(t, err.Error(), "SENTINEL_SECRET", "the holder establish error must be sanitized")
+}
+
+func Test_holderLoop_reconnectResetsHeldAndBumpsRestarts(t *testing.T) {
+	// A mid-run liveness-ping error under a live ctx triggers exactly ONE reconnect that
+	// re-issues the BEGIN/SELECT 1/txid_current() sequence on the fresh conn, resets heldSince
+	// to a newer value, and increments holderRestarts to 1.
+	old := holderPingInterval
+	holderPingInterval = time.Millisecond
+	defer func() { holderPingInterval = old }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := &captureLogger{}
+
+	// The held conn's first liveness ping fails (a mid-run drop).
+	conn1 := &stormConn{failOn: "SELECT 1", failErr: fmt.Errorf("holder conn dropped"), okBefore: 0}
+	// The reconnect returns a fresh conn that re-establishes cleanly, then self-cancels after
+	// txid_current() so the loop exits without relying on wall-clock.
+	conn2 := &stormConn{stopAfter: 1, stopSQL: "txid_current", cancel: cancel}
+
+	var heldSince, holderRestarts atomic.Int64
+	pre := time.Now().Add(-time.Hour).UnixNano()
+	heldSince.Store(pre)
+
+	reconnects := 0
+	err := runHolder(ctx, conn1, logger, &heldSince, &holderRestarts, func(context.Context) (db.Conn, error) {
+		reconnects++
+		return conn2, nil
+	})
+
+	assert.NoError(t, err, "a clean ctx cancel must not surface as an error")
+	assert.Equal(t, 1, reconnects, "the holder must attempt exactly one reconnect")
+	assert.Equal(t, int64(1), holderRestarts.Load(), "a successful reconnect must bump holder-restarts to 1")
+	assert.Greater(t, heldSince.Load(), pre, "the reconnect must RESET heldSince to a newer value")
+
+	joined := strings.Join(stormSQLs(conn2.recorded()), "\n")
+	assert.Contains(t, joined, "BEGIN ISOLATION LEVEL REPEATABLE READ", "reconnect must re-issue the BEGIN")
+	assert.Contains(t, joined, "SELECT 1", "reconnect must re-pin the snapshot")
+	assert.Contains(t, joined, "SELECT txid_current()", "reconnect must re-pin the xid")
+}
+
+func Test_holderLoop_secondFailureWarnsAndExits(t *testing.T) {
+	// A drop whose reconnect fails (the second failure) logs a sanitized warning and the holder
+	// returns WITHOUT failing Run; holder-restarts must NOT be incremented on a failed reconnect.
+	old := holderPingInterval
+	holderPingInterval = time.Millisecond
+	defer func() { holderPingInterval = old }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := &captureLogger{}
+
+	conn1 := &stormConn{
+		failOn:   "SELECT 1",
+		failErr:  fmt.Errorf("ping failed: password=SENTINEL_SECRET drop"),
+		okBefore: 0,
+	}
+
+	var heldSince, holderRestarts atomic.Int64
+	reconnects := 0
+	err := runHolder(ctx, conn1, logger, &heldSince, &holderRestarts, func(context.Context) (db.Conn, error) {
+		reconnects++
+		return nil, fmt.Errorf("reconnect failed: host=SENTINEL_SECRET refused")
+	})
+
+	assert.NoError(t, err, "a dead holder degrades (returns nil), it does not fail Run")
+	assert.Equal(t, 1, reconnects, "the holder must attempt exactly one reconnect")
+	assert.Equal(t, int64(0), holderRestarts.Load(), "a failed reconnect must not count as a restart")
+
+	joined := strings.Join(logger.warns(), "\n")
+	assert.Contains(t, joined, "no longer held", "the degradation must be warned loudly")
+	assert.NotContains(t, joined, "SENTINEL_SECRET", "every holder warning must be sanitized")
+}
+
+func Test_runWorkerWithConn_scatteredUpdateLoop(t *testing.T) {
+	// The worker first SETs application_name, then loops the random-id UPDATE: id is bound as $2
+	// (in [1, rows], never interpolated) and payload as $1. Each success increments churned; a
+	// clean ctx cancel returns nil.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conn := &stormConn{stopAfter: 8, stopSQL: "UPDATE", cancel: cancel}
+
+	const rows int64 = 500
+	const payloadBytes = 256
+	cfg := Config{PayloadBytes: payloadBytes, Rate: 0}
+	updateSQL := "UPDATE t SET payload = $1 WHERE id = $2"
+
+	var churned, sessions atomic.Int64
+
+	err := runWorkerWithConn(ctx, conn, log.NewDefaultLogger("error"), cfg, updateSQL, rows, &churned, &sessions)
+	assert.NoError(t, err, "a clean ctx cancel must not surface as an error")
+
+	recorded := conn.recorded()
+	assert.GreaterOrEqual(t, len(recorded), 2, "worker must SET application_name then UPDATE")
+	assert.Contains(t, recorded[0].sql, "SET application_name = 'noisia'", "first Exec must be the SET")
+
+	updates := 0
+	for _, e := range recorded {
+		if !strings.Contains(e.sql, "UPDATE") {
+			continue
+		}
+		updates++
+		assert.Equal(t, updateSQL, e.sql, "the worker must loop exactly the scattered UPDATE")
+		assert.Len(t, e.args, 2, "the UPDATE must bind payload ($1) and id ($2)")
+		id, ok := e.args[1].(int64)
+		assert.True(t, ok, "id must be bound as an int64")
+		assert.GreaterOrEqual(t, id, int64(1), "random id must be >= 1")
+		assert.LessOrEqual(t, id, rows, "random id must be <= rows")
+	}
+	assert.GreaterOrEqual(t, updates, 1, "the worker must have issued at least one UPDATE")
+	assert.Equal(t, int64(updates), churned.Load(), "churned must increment once per successful UPDATE")
+	assert.Equal(t, int64(1), sessions.Load(), "a fully-started worker counts as exactly one live session")
+}
+
+func Test_runWorkerWithConn_initErrorVsDegraded(t *testing.T) {
+	t.Run("init error on first update", func(t *testing.T) {
+		// First UPDATE fails with nothing ever churned -> sanitized init error returned; sessions
+		// must NOT be decremented (a worker that never churned is a setup defect, not a degradation).
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		conn := &stormConn{
+			failOn:   "UPDATE",
+			failErr:  fmt.Errorf("update failed: password=SENTINEL_SECRET reset"),
+			okBefore: 0,
+		}
+		const rows int64 = 100
+		cfg := Config{PayloadBytes: 1, Rate: 0}
+		var churned, sessions atomic.Int64
+
+		err := runWorkerWithConn(ctx, conn, log.NewDefaultLogger("error"), cfg,
+			"UPDATE t SET payload = $1 WHERE id = $2", rows, &churned, &sessions)
+
+		assert.Error(t, err, "a first-UPDATE failure with nothing ever churned is a returned init error")
+		assert.NotContains(t, err.Error(), "SENTINEL_SECRET", "the init error must be sanitized")
+		assert.Equal(t, int64(0), churned.Load(), "no UPDATE succeeded, so churned stays 0")
+		assert.Equal(t, int64(1), sessions.Load(), "the init-error path must not decrement sessions")
+	})
+
+	t.Run("degraded decrements sessions once", func(t *testing.T) {
+		// After some successful UPDATEs the conn fails mid-loop while ctx is live and a sibling is
+		// live: the worker must warn, return nil (degraded, not fatal), and decrement sessions once.
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		logger := &captureLogger{}
+
+		conn := &stormConn{
+			failOn:   "UPDATE",
+			failErr:  fmt.Errorf("worker conn dropped"),
+			okBefore: 3, // first 3 UPDATEs succeed, then it fails
+		}
+		const rows int64 = 100
+		cfg := Config{PayloadBytes: 1, Rate: 0}
+		var churned, sessions atomic.Int64
+		sessions.Store(1) // a sibling worker is already live (this worker will become the 2nd)
+
+		err := runWorkerWithConn(ctx, conn, logger, cfg,
+			"UPDATE t SET payload = $1 WHERE id = $2", rows, &churned, &sessions)
+
+		assert.NoError(t, err, "a degraded mid-run loss returns nil, not an error")
+		assert.GreaterOrEqual(t, churned.Load(), int64(3), "the UPDATEs that succeeded before the loss must have counted")
+		assert.Equal(t, int64(1), sessions.Load(), "the worker counts itself live (1->2) then the degraded death decrements once (2->1)")
+
+		joined := strings.Join(logger.warns(), "\n")
+		assert.Contains(t, joined, "worker lost connection", "the degraded loss must be warned")
+	})
+}
+
+func Test_runReporter_panelFormat(t *testing.T) {
+	// runReporter prints the panel each interval, reading only the atomics. Assert the exact
+	// field set — held, churned, the (rate/min), holder-restarts, elapsed — and that the panel
+	// carries NONE of dirtied/flush/checkpoints/sessions.
+	logger := &captureLogger{}
+
+	var churned, holderRestarts, heldSince atomic.Int64
+	churned.Store(12)
+	holderRestarts.Store(2)
+	heldSince.Store(time.Now().Add(-90 * time.Second).UnixNano())
+
+	done := make(chan struct{})
+	reporterDone := make(chan struct{})
+	interval := 30 * time.Millisecond
+	// elapsed origin three minutes back so rate = 12/3 = 4.0/min deterministically.
+	start := time.Now().Add(-3 * time.Minute)
+	go func() {
+		runReporter(context.Background(), done, start, interval, log.Logger(logger), &churned, &holderRestarts, &heldSince)
+		close(reporterDone)
+	}()
+
+	time.Sleep(interval + 150*time.Millisecond)
+	close(done)
+	<-reporterDone
+
+	lines := logger.infos()
+	assert.GreaterOrEqual(t, len(lines), 1, "at least one panel line must be printed")
+
+	first := lines[0]
+	assert.Contains(t, first, "xmin-horizon-holder: held=", "panel must report the held duration")
+	assert.Contains(t, first, "churned=12", "panel must report the churned count")
+	assert.Contains(t, first, "(4.0/min)", "panel must report churned/min")
+	assert.Contains(t, first, "holder-restarts=2", "panel must report the holder-restarts count")
+	assert.Contains(t, first, "elapsed=", "panel must report elapsed")
+	assert.NotContains(t, first, "dirtied", "the panel must NOT carry a dirtied field")
+	assert.NotContains(t, first, "flush", "the panel must NOT carry a flush field")
+	assert.NotContains(t, first, "checkpoints", "the panel must NOT carry a checkpoints field")
+	assert.NotContains(t, first, "sessions", "the panel must NOT carry a sessions field")
+}
+
+// stormSQLs extracts the SQL text of recorded execs for order/content assertions.
+func stormSQLs(execs []recordedExec) []string {
+	out := make([]string, 0, len(execs))
+	for _, e := range execs {
+		out = append(out, e.sql)
+	}
+	return out
 }
