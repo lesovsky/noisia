@@ -77,7 +77,8 @@ xmin-horizon-holder: held=12m34s churned=9120000 (720000.0/min) holder-restarts=
   signal, not a glitch.
 - `churned=<N>` — successful `UPDATE`s noisia issued (the dead tuples *we* produced). Re-updating the same
   random row recounts; this is churn volume, not distinct dead rows.
-- `(<rate>/min)` — current churn rate.
+- `(<rate>/min)` — average churn rate since the workload started (`churned ÷ elapsed minutes`), not a
+  windowed instantaneous rate: it converges on the steady-state rate but reads low during the startup ramp.
 - `holder-restarts=<n>` — count of holder reconnects; it makes a `held` reset **visible** instead of hiding it.
 - `elapsed=<Z>` — total workload uptime.
 

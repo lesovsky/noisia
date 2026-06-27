@@ -150,7 +150,7 @@ justifies the slower payoff.
   REPEATABLE READ` + `SELECT 1` pins `backend_xmin`, `txid_current()` pins `backend_xid`) on a dedicated
   connection freezes the global oldest-xmin horizon for the whole run; `--jobs` scattered random-id `UPDATE`
   churn workers (per-worker connection) manufacture dead tuples the frozen horizon makes non-reclaimable — a
-  horizon attack, not a rate attack (modest `--rate 3000` default). Panel:
+  horizon attack, not a rate attack (modest `--xmin-horizon-holder.rate 3000` default). Panel:
   `held=<dur> churned=<N> (<rate>/min) holder-restarts=<n> elapsed=<Z>`; `held` resets and `holder-restarts`
   increments on a holder reconnect (one best-effort reconnect on drop). No superuser / managed-friendly (RDS /
   Cloud SQL / Supabase / Neon — only connect + `CREATE` + `SELECT`/`txid_current()`), tempered by an
