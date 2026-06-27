@@ -46,6 +46,7 @@ The repo is a Go module (`github.com/lesovsky/noisia`) with one package per work
 ├── hotrowcontention/  [workload: --jobs workers share K hot rows (inverse of walflood) → row-lock/buffer_content contention → CPU saturation / TPS collapse]
 ├── seqscanstorm/      [workload: --jobs workers full-scan an un-indexed table (count(*) WHERE payload=0) → forced Seq Scan → CPU saturation; brute-force counterpart to hotrowcontention]
 ├── checkpointstorm/   [workload: --jobs workers scatter random-id UPDATEs while a serial forcer issues synchronous CHECKPOINTs on a --dirty-pct trigger → IO sawtooth; the fsync/flush counterpart to walflood's WAL volume]
+├── xminhorizonholder/ [workload: a mandatory long-lived REPEATABLE READ "holder" tx freezes the global oldest-xmin horizon (pins backend_xmin + backend_xid) while --jobs scattered-UPDATE churn workers manufacture dead tuples autovacuum cannot reclaim → creeping database-wide bloat; needs no superuser (runs on managed PostgreSQL)]
 ├── Dockerfile         [multi-stage build → scratch image]
 ├── Makefile           [dep/lint/test/build/docker targets]
 └── .github/workflows/ [CI: default.yml (lint+test), release.yml (test+docker+goreleaser)]
