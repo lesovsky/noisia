@@ -159,6 +159,9 @@ func TestWorkload_Run_vacuumReclaimsAfterStop(t *testing.T) {
 	assert.NoError(t, err)
 	var heldSince atomic.Int64
 	assert.NoError(t, establishHolder(ctx, holderConn, &heldSince))
+	// Safety net so the holder connection is closed even if an assertion below returns
+	// early; the explicit Close at the reveal step is the functional snapshot release.
+	defer func() { _ = holderConn.Close() }()
 
 	// Create dead tuples AFTER the holder's snapshot: UPDATE every row twice so the
 	// old versions are visible only to the pinned snapshot.
@@ -204,6 +207,21 @@ func TestWorkload_Run_vacuumReclaimsAfterStop(t *testing.T) {
 	assert.Equal(t, int64(0), afterDead, "VACUUM after the holder is released must reclaim dead tuples (held horizon was the cause)")
 }
 
+// scalarBool runs a single-bool query (db.Conn has no QueryRow) and returns the first
+// row's bool, or false if there is no row. Used to make privilege guards load-bearing.
+func scalarBool(t *testing.T, conn db.Conn, query string) bool {
+	t.Helper()
+	rows, err := conn.Query(context.Background(), query)
+	assert.NoError(t, err)
+	defer rows.Close()
+	var b bool
+	for rows.Next() {
+		assert.NoError(t, rows.Scan(&b))
+	}
+	assert.NoError(t, rows.Err())
+	return b
+}
+
 func TestWorkload_Run_nonSuperuserSucceeds(t *testing.T) {
 	// NO-SUPERUSER: the INVERSE of checkpoint-storm's privilege-gate test. A freshly
 	// created non-superuser role with ONLY LOGIN + CREATE ON SCHEMA public (NO
@@ -224,6 +242,12 @@ func TestWorkload_Run_nonSuperuserSucceeds(t *testing.T) {
 	// membership is granted — yet the holder still succeeds, unlike checkpoint-storm.
 	_, _, _ = obs.Exec(context.Background(), "GRANT CREATE ON SCHEMA public TO limited")
 	defer func() { _, _, _ = obs.Exec(context.Background(), "DROP ROLE IF EXISTS limited") }()
+
+	// Guard: prove the role genuinely lacks elevated privileges, so the SUCCESS proof
+	// below is load-bearing ("the holder needs no privilege"), not true by construction.
+	assert.False(t, scalarBool(t, obs,
+		"SELECT rolsuper OR (to_regrole('pg_checkpoint') IS NOT NULL AND pg_has_role('limited','pg_checkpoint','MEMBER')) FROM pg_roles WHERE rolname = 'limited'"),
+		"the limited role must NOT be superuser or a pg_checkpoint member (else the no-privilege proof is vacuous)")
 
 	// Build the role's conninfo from the test DSN, swapping in user/password.
 	conninfo := swapUserPassword(t, db.TestConninfo, "limited", "SENTINEL_SECRET")
