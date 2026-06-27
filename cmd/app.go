@@ -17,66 +17,72 @@ import (
 	"github.com/lesovsky/noisia/terminate"
 	"github.com/lesovsky/noisia/waitxacts"
 	"github.com/lesovsky/noisia/walflood"
+	"github.com/lesovsky/noisia/xminhorizonholder"
 	"sync"
 	"time"
 )
 
 type config struct {
-	logger                         log.Logger
-	postgresConninfo               string
-	jobs                           uint16 // max 65535
-	duration                       time.Duration
-	idleXacts                      bool
-	idleXactsNaptimeMin            time.Duration
-	idleXactsNaptimeMax            time.Duration
-	rollbacks                      bool
-	rollbacksRate                  float64
-	waitXacts                      bool
-	waitXactsFixture               bool
-	waitXactsLocktimeMin           time.Duration
-	waitXactsLocktimeMax           time.Duration
-	deadlocks                      bool
-	tempFiles                      bool
-	tempFilesRate                  float64
-	terminate                      bool
-	terminateInterval              time.Duration
-	terminateRate                  uint16
-	terminateSoftMode              bool
-	terminateIgnoreSystem          bool
-	terminateClientAddr            string
-	terminateUser                  string
-	terminateDatabase              string
-	terminateAppName               string
-	failconns                      bool
-	forkconns                      bool
-	forkconnsRate                  uint16
-	backendKiller                  bool
-	backendKillerRate              float64
-	backendKillerPlanSize          int
-	backendKillerShowMemory        bool
-	backendKillerReportInterval    time.Duration
-	slotBloat                      bool
-	slotBloatRate                  float64
-	slotBloatRows                  int
-	slotBloatPayloadBytes          int
-	slotBloatReportInterval        time.Duration
-	slotBloatKeepSlot              bool
-	walFlood                       bool
-	walFloodRate                   float64
-	walFloodRows                   int
-	walFloodPayloadBytes           int
-	walFloodReportInterval         time.Duration
-	hotRowContention               bool
-	hotRows                        uint
-	hotRowContentionReportInterval time.Duration
-	seqscanStorm                   bool
-	seqscanStormTableSize          int64
-	checkpointStorm                bool
-	checkpointStormTableSize       int64
-	checkpointStormDirtyPct        int
-	checkpointStormPayloadBytes    int
-	checkpointStormRate            float64
-	checkpointStormReportInterval  time.Duration
+	logger                          log.Logger
+	postgresConninfo                string
+	jobs                            uint16 // max 65535
+	duration                        time.Duration
+	idleXacts                       bool
+	idleXactsNaptimeMin             time.Duration
+	idleXactsNaptimeMax             time.Duration
+	rollbacks                       bool
+	rollbacksRate                   float64
+	waitXacts                       bool
+	waitXactsFixture                bool
+	waitXactsLocktimeMin            time.Duration
+	waitXactsLocktimeMax            time.Duration
+	deadlocks                       bool
+	tempFiles                       bool
+	tempFilesRate                   float64
+	terminate                       bool
+	terminateInterval               time.Duration
+	terminateRate                   uint16
+	terminateSoftMode               bool
+	terminateIgnoreSystem           bool
+	terminateClientAddr             string
+	terminateUser                   string
+	terminateDatabase               string
+	terminateAppName                string
+	failconns                       bool
+	forkconns                       bool
+	forkconnsRate                   uint16
+	backendKiller                   bool
+	backendKillerRate               float64
+	backendKillerPlanSize           int
+	backendKillerShowMemory         bool
+	backendKillerReportInterval     time.Duration
+	slotBloat                       bool
+	slotBloatRate                   float64
+	slotBloatRows                   int
+	slotBloatPayloadBytes           int
+	slotBloatReportInterval         time.Duration
+	slotBloatKeepSlot               bool
+	walFlood                        bool
+	walFloodRate                    float64
+	walFloodRows                    int
+	walFloodPayloadBytes            int
+	walFloodReportInterval          time.Duration
+	hotRowContention                bool
+	hotRows                         uint
+	hotRowContentionReportInterval  time.Duration
+	seqscanStorm                    bool
+	seqscanStormTableSize           int64
+	checkpointStorm                 bool
+	checkpointStormTableSize        int64
+	checkpointStormDirtyPct         int
+	checkpointStormPayloadBytes     int
+	checkpointStormRate             float64
+	checkpointStormReportInterval   time.Duration
+	xminHorizonHolder               bool
+	xminHorizonHolderTableSize      int64
+	xminHorizonHolderPayloadBytes   int
+	xminHorizonHolderRate           float64
+	xminHorizonHolderReportInterval time.Duration
 }
 
 func runApplication(ctx context.Context, c config, log log.Logger) error {
@@ -248,6 +254,18 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 			err := startCheckpointStormWorkload(ctx, c, log)
 			if err != nil {
 				log.Errorf("checkpoint-storm workload failed: %s", err)
+			}
+			wg.Done()
+		}()
+	}
+
+	if c.xminHorizonHolder {
+		log.Info("start xmin-horizon-holder workload")
+		wg.Add(1)
+		go func() {
+			err := startXminHorizonHolderWorkload(ctx, c, log)
+			if err != nil {
+				log.Errorf("xmin-horizon-holder workload failed: %s", err)
 			}
 			wg.Done()
 		}()
@@ -477,6 +495,24 @@ func startCheckpointStormWorkload(ctx context.Context, c config, logger log.Logg
 			PayloadBytes:   c.checkpointStormPayloadBytes,
 			Rate:           c.checkpointStormRate,
 			ReportInterval: c.checkpointStormReportInterval,
+			Jobs:           c.jobs,
+		}, logger,
+	)
+	if err != nil {
+		return err
+	}
+
+	return workload.Run(ctx)
+}
+
+func startXminHorizonHolderWorkload(ctx context.Context, c config, logger log.Logger) error {
+	workload, err := xminhorizonholder.NewWorkload(
+		xminhorizonholder.Config{
+			Conninfo:       c.postgresConninfo,
+			TableSize:      c.xminHorizonHolderTableSize,
+			PayloadBytes:   c.xminHorizonHolderPayloadBytes,
+			Rate:           c.xminHorizonHolderRate,
+			ReportInterval: c.xminHorizonHolderReportInterval,
 			Jobs:           c.jobs,
 		}, logger,
 	)

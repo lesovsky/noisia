@@ -146,6 +146,21 @@ justifies the slower payoff.
 - One transaction lives for minutes holding an old snapshot, so vacuum cannot remove
   dead tuples database-wide. Distinct from `idlexacts` (those are short-lived).
 - Teaches `backend_xmin`, oldest-xmin horizon, why "autovacuum runs but doesn't help".
+- **Status:** implemented (007-feat-xmin-horizon-holder). One mandatory holder (raw `BEGIN ISOLATION LEVEL
+  REPEATABLE READ` + `SELECT 1` pins `backend_xmin`, `txid_current()` pins `backend_xid`) on a dedicated
+  connection freezes the global oldest-xmin horizon for the whole run; `--jobs` scattered random-id `UPDATE`
+  churn workers (per-worker connection) manufacture dead tuples the frozen horizon makes non-reclaimable — a
+  horizon attack, not a rate attack (modest `--xmin-horizon-holder.rate 3000` default). Panel:
+  `held=<dur> churned=<N> (<rate>/min) holder-restarts=<n> elapsed=<Z>`; `held` resets and `holder-restarts`
+  increments on a holder reconnect (one best-effort reconnect on drop). No superuser / managed-friendly (RDS /
+  Cloud SQL / Supabase / Neon — only connect + `CREATE` + `SELECT`/`txid_current()`), tempered by an
+  `idle_in_transaction_session_timeout` caveat that periodically kills the idle holder. Honest contract:
+  degradation observed externally (`pg_stat_user_tables.n_dead_tup`, `backend_xmin`, pgstattuple, VACUUM
+  verbose), **not** instance death; wraparound read-only (`database is not accepting commands to avoid
+  wraparound data loss`) is a documented far-end asymptote surfacing as a churn write error, **not** a PANIC.
+  Verified by unit + testcontainers integration (headline `n_dead_tup` growth, reveal `VACUUM` drains after
+  stop, no-superuser success, `--jobs` honored, cleanup); real bloat / wraparound is a manual stand demo, not
+  CI. Demo-guide: docs/workloads/xmin-horizon-holder.md.
 
 ### subxact-overflow (SLRU) — advanced bonus
 - Savepoint abuse → SubtransSLRU contention and suboverflowed snapshots → mysterious
