@@ -14,6 +14,7 @@ import (
 	"github.com/lesovsky/noisia/db"
 	"github.com/lesovsky/noisia/log"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // -----------------------------------------------------------------------------
@@ -115,14 +116,14 @@ func TestWorkload_Run_seedShape(t *testing.T) {
 }
 
 func TestWorkload_Run_seedSizeFaithful(t *testing.T) {
-	// REGRESSION GUARD: the seed must actually reach the requested on-disk size. The
-	// original bug filled payload with ZEROS at PayloadBytes=8192 — >= ~2KB so the bytea
-	// TOASTed out-of-line and all-zeros compressed to ~nothing, leaving the MAIN heap
-	// holding only toast pointers (~2% of target). The fix is an INLINE default
-	// (PayloadBytes=1024, below the TOAST threshold) filled with RANDOM (incompressible)
-	// bytes. Assert pg_relation_size('<table>') (main heap only) is at least 0.6× TableSize:
-	// comfortably below the real ~1.0-1.1× (page/fillfactor overhead) yet far above the
-	// old TOASTed-away behavior (<0.02×), so it fails the bug and passes the fix.
+	// REGRESSION GUARD (inline default → MAIN heap): at the inline default
+	// PayloadBytes=1024 (below the ~2KB TOAST threshold) the payload stays in the heap, so
+	// --table-size must map to pg_relation_size (the MAIN fork). This guards the rowsForSize
+	// row-count mapping for the default config. It does NOT discriminate the incompressibility
+	// fix: at 1024 inline the value is stored verbatim (no compression), so a zero buffer and a
+	// random buffer produce the same ~target heap — the incompressibility aspect is guarded by
+	// TestWorkload_Run_seedSizeFaithful_toastMode below. Threshold 0.6× is well below the real
+	// ~1.0-1.1× (page/fillfactor overhead) yet far above the old TOASTed-away heap (<0.02×).
 	obs, err := db.Connect(context.Background(), db.TestConninfo)
 	assert.NoError(t, err)
 	defer func() { _ = obs.Close() }()
@@ -149,17 +150,63 @@ func TestWorkload_Run_seedSizeFaithful(t *testing.T) {
 	// The whole seed (CREATE + INDEX + INSERT) commits in one transaction, so the moment
 	// the table is visible the full heap is already on disk.
 	table := waitForBloatchurnTable(t, obs)
-	assert.NotEmpty(t, table, "seed table must appear")
 
-	heapSize := scalarInt64(t, obs, "SELECT pg_relation_size($1)", table)
+	heapSize := relationSize(t, obs, table) // MAIN fork: the inline payload lives in the heap
 	// 0.6× the target, computed in integer arithmetic (minTableSize is a constant, so a
 	// float literal would not fold to an int64). Robust to page/fillfactor overhead, yet far
 	// above the old TOASTed-away heap (<0.02×).
 	minExpected := int64(minTableSize) * 6 / 10
-	t.Logf("seed heap pg_relation_size = %d bytes (target %d, floor %d)", heapSize, int64(minTableSize), minExpected)
+	t.Logf("inline seed pg_relation_size = %d bytes (target %d, floor %d)", heapSize, int64(minTableSize), minExpected)
 	assert.GreaterOrEqual(t, heapSize, minExpected,
-		"seed heap (%d bytes) must reach ~table-size, proving payload stays inline and is not TOASTed/compressed away (target %d, floor %d)",
+		"inline seed heap (%d bytes) must reach ~table-size, proving the default payload stays in the main heap (target %d, floor %d)",
 		heapSize, int64(minTableSize), minExpected)
+
+	cancel()
+	assert.NoError(t, <-done)
+}
+
+func TestWorkload_Run_seedSizeFaithful_toastMode(t *testing.T) {
+	// REGRESSION GUARD (incompressibility — the test that actually fails on the old zero-fill):
+	// at PayloadBytes=8192 (>= the ~2KB TOAST threshold) the payload is stored OUT-OF-LINE in
+	// the TOAST fork, so the on-disk size shows up in pg_total_relation_size (heap + TOAST +
+	// indexes), NOT pg_relation_size (heap only). With the RANDOM (incompressible) fill the
+	// TOAST fork holds ~8192 × rows bytes uncompressed ≈ the target, so total >= 0.6× TableSize.
+	// With the OLD zero fill the all-zeros bytea pglz-compresses to almost nothing, so the TOAST
+	// fork is tiny and total stays << target (<0.02×) — this assertion FAILS. That is what makes
+	// this the discriminating guard for the incompressibility fix.
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
+	purgeBloatchurn(t, obs)
+
+	config := Config{
+		Conninfo:       db.TestConninfo,
+		TableSize:      minTableSize,
+		PayloadBytes:   8192, // >= ~2KB TOAST threshold: payload goes out-of-line into the TOAST fork
+		Rate:           3000,
+		ReportInterval: 200 * time.Millisecond,
+		Jobs:           2,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w, err := NewWorkload(config, log.NewDefaultLogger("error"))
+	assert.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+
+	// The whole seed commits in one transaction, so once the table is visible the full seed
+	// (heap + TOAST) is already on disk.
+	table := waitForBloatchurnTable(t, obs)
+
+	totalSize := totalRelationSize(t, obs, table) // heap + TOAST + indexes: the payload is in TOAST
+	minExpected := int64(minTableSize) * 6 / 10
+	t.Logf("toast seed pg_total_relation_size = %d bytes (target %d, floor %d)", totalSize, int64(minTableSize), minExpected)
+	assert.GreaterOrEqual(t, totalSize, minExpected,
+		"toast-mode seed total (%d bytes) must reach ~table-size, proving the random payload is incompressible and not pglz-compressed away in TOAST (target %d, floor %d)",
+		totalSize, int64(minTableSize), minExpected)
 
 	cancel()
 	assert.NoError(t, <-done)
@@ -617,6 +664,27 @@ func countNoisiaBackends(t *testing.T, conn db.Conn) int {
 	t.Helper()
 	return int(scalarInt64(t, conn,
 		"SELECT count(*) FROM pg_stat_activity WHERE application_name = 'noisia'"))
+}
+
+// relationSize returns pg_relation_size (the MAIN fork only — heap, excluding TOAST and
+// indexes) for the given relation. Used to prove the INLINE-default seed lands in the heap.
+// The table must be non-empty: a discovery timeout would otherwise pass "" to
+// pg_relation_size, whose error leaves a nil rows handle and panics on Close — require fails
+// the test cleanly instead.
+func relationSize(t *testing.T, conn db.Conn, table string) int64 {
+	t.Helper()
+	require.NotEmpty(t, table, "seed table must be discovered before reading its size")
+	return scalarInt64(t, conn, "SELECT pg_relation_size($1)", table)
+}
+
+// totalRelationSize returns pg_total_relation_size (heap + TOAST + all indexes) for the given
+// relation. Used in TOAST mode where the payload is stored out-of-line: only the total, which
+// includes the TOAST fork, reflects the requested on-disk size. The same non-empty guard as
+// relationSize applies.
+func totalRelationSize(t *testing.T, conn db.Conn, table string) int64 {
+	t.Helper()
+	require.NotEmpty(t, table, "seed table must be discovered before reading its size")
+	return scalarInt64(t, conn, "SELECT pg_total_relation_size($1)", table)
 }
 
 // scalarInt64 runs a single-int64 query (db.Conn has no QueryRow) and returns the
