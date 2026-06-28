@@ -316,7 +316,7 @@ func (w *workload) runWorker(ctx context.Context, updateSQL string, dirtied, sin
 // database (runWorker itself only adds the db.Connect that needs a real server).
 //
 // Each statement targets a RANDOM id = rand.Int63n(rows)+1 (scattered across the whole
-// heap, Decision 6), bound as $2; payload is a fixed zero-filled buffer bound as $1. On
+// heap, Decision 6), bound as $2; payload is a fixed random-filled buffer bound as $1. On
 // each successful UPDATE it adds PayloadBytes to dirtied and 1 to sinceCheckpoint.
 //
 // Returns nil on a clean ctx stop. On a UPDATE error under a live ctx after at least one
@@ -340,7 +340,14 @@ func runWorkerWithConn(ctx context.Context, conn db.Conn, logger log.Logger, con
 	}
 	limiter := rate.NewLimiter(lim, 1)
 
+	// The payload must be INCOMPRESSIBLE (random bytes, not zeros): an all-zeros bytea
+	// compresses to almost nothing, so a payload at/above the ~2KB TOAST threshold would be
+	// compressed/TOASTed away out-of-line instead of dirtying a real heap page. Random bytes
+	// keep the write landing on a distinct heap page. Filled once and reused for every UPDATE.
 	payload := make([]byte, config.PayloadBytes)
+	for i := range payload {
+		payload[i] = byte(rand.Intn(256))
+	}
 
 	for {
 		if err := limiter.Wait(ctx); err != nil {
@@ -566,9 +573,15 @@ func prepare(ctx context.Context, conn db.Conn, tableIdent string, rows int64, p
 		return err
 	}
 
-	// The payload content is intentionally a fixed zero-filled buffer: dirty pages are
-	// produced by the UPDATE regardless of byte equality, so the value is irrelevant.
+	// The payload must be INCOMPRESSIBLE (random bytes, not zeros): an all-zeros bytea
+	// compresses to almost nothing, so a payload at/above the ~2KB TOAST threshold would be
+	// compressed/TOASTed away out-of-line, leaving the main heap far smaller than the
+	// requested table-size — too few distinct pages to dirty. Random bytes keep the heap at
+	// its on-disk size so the forced CHECKPOINT flushes many distinct pages. Filled once.
 	payload := make([]byte, payloadBytes)
+	for i := range payload {
+		payload[i] = byte(rand.Intn(256))
+	}
 	// Seed in a single set-based statement: one server-side round-trip instead of N
 	// network round-trips, which matters for large N over a remote link.
 	insertSQL := fmt.Sprintf("INSERT INTO %s (id, payload) SELECT g, $1 FROM generate_series(1, $2) AS g", tableIdent)

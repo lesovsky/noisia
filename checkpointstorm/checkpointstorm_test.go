@@ -360,7 +360,7 @@ func Test_prepare_emitsCreateAndSeedSQL(t *testing.T) {
 	// it runs inside an explicit, committed transaction; CREATE TABLE has
 	// (id bigint PRIMARY KEY, payload bytea); the seed is a single set-based
 	// INSERT ... SELECT $1 FROM generate_series(1, $2) whose payload is a fixed
-	// zero-filled make([]byte, PayloadBytes) bound as $1 and the row count bound as $2.
+	// random-filled make([]byte, PayloadBytes) bound as $1 and the row count bound as $2.
 	const rows int64 = 12345
 	const payloadBytes = 256
 	tableIdent := "\"noisia_chkptstorm_" + randomSuffix(8) + "\""
@@ -391,8 +391,13 @@ func Test_prepare_emitsCreateAndSeedSQL(t *testing.T) {
 		"seed must be a single set-based INSERT ... SELECT with payload as $1 and row count as $2 (walflood two-bind form)")
 	// The row count must be BOUND as $2, not string-interpolated into the SQL text.
 	assert.NotContains(t, insert.sql, fmt.Sprintf("%d", rows), "row count must not be interpolated into the SQL text")
-	assert.Equal(t, []interface{}{make([]byte, payloadBytes), rows}, insert.args,
-		"payload must be a fixed zero-filled buffer ($1) and the row count bound as $2")
+	// Payload content is now RANDOM (incompressible) so the heap reaches its on-disk size,
+	// so assert only that $1 is a []byte of the right length (not its bytes) and $2 the rows.
+	assert.Len(t, insert.args, 2, "seed must bind payload ($1) and row count ($2)")
+	payloadArg, ok := insert.args[0].([]byte)
+	assert.True(t, ok, "payload must be bound as a []byte")
+	assert.Len(t, payloadArg, payloadBytes, "payload buffer must be PayloadBytes long")
+	assert.Equal(t, rows, insert.args[1], "row count must be bound as $2")
 }
 
 // recordingConn is a db.Conn double that records every SQL statement Exec'd, so a test

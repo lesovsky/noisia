@@ -92,6 +92,59 @@ func TestWorkload_Run_checkpointsGrow(t *testing.T) {
 	assert.NoError(t, <-done)
 }
 
+func TestWorkload_Run_seedSizeFaithful(t *testing.T) {
+	// REGRESSION GUARD: the seed must actually reach the requested on-disk size so the
+	// forced CHECKPOINT has many distinct heap pages to flush. The original bug filled
+	// payload with ZEROS at PayloadBytes=8192 — >= ~2KB so the bytea TOASTed out-of-line
+	// and all-zeros compressed to ~nothing, leaving the MAIN heap holding only toast
+	// pointers (~1% of target → ~1000 pages instead of ~131k). The fix is an INLINE default
+	// (PayloadBytes=1024, below the TOAST threshold) filled with RANDOM (incompressible)
+	// bytes. Assert pg_relation_size('<table>') (main heap only) is at least 0.6× TableSize:
+	// comfortably below the real ~1.0-1.1× (page/fillfactor overhead) yet far above the old
+	// TOASTed-away behavior (<0.02×), so it fails the bug and passes the fix.
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
+	purgeChkptstorm(t, obs)
+
+	config := Config{
+		Conninfo:       db.TestConninfo,
+		TableSize:      minTableSize,
+		DirtyPct:       minDirtyPct,
+		PayloadBytes:   1024, // inline (< ~2KB TOAST threshold): table-size maps to the heap
+		Rate:           3000,
+		ReportInterval: 200 * time.Millisecond,
+		Jobs:           2,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w, err := NewWorkload(config, log.NewDefaultLogger("error"))
+	assert.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+
+	// The whole seed (CREATE + INSERT) commits in one transaction, so the moment the table
+	// is visible the full heap is already on disk.
+	table := waitForChkptstormTable(t, obs)
+	assert.NotEmpty(t, table, "seed table must appear")
+
+	heapSize := relationSize(t, obs, table)
+	// 0.6× the target, computed in integer arithmetic (minTableSize is a constant, so a
+	// float literal would not fold to an int64). Robust to page/fillfactor overhead, yet far
+	// above the old TOASTed-away heap (<0.02×).
+	minExpected := int64(minTableSize) * 6 / 10
+	t.Logf("seed heap pg_relation_size = %d bytes (target %d, floor %d)", heapSize, int64(minTableSize), minExpected)
+	assert.GreaterOrEqual(t, heapSize, minExpected,
+		"seed heap (%d bytes) must reach ~table-size, proving payload stays inline and is not TOASTed/compressed away (target %d, floor %d)",
+		heapSize, int64(minTableSize), minExpected)
+
+	cancel()
+	assert.NoError(t, <-done)
+}
+
 func TestWorkload_Run_scatteredUpdatesLand(t *testing.T) {
 	// pg_stat_user_tables.n_tup_upd for the seed table strictly grows under load —
 	// the proof that the scattered random-id UPDATE workers actually reach the
@@ -381,6 +434,22 @@ func nTupUpd(t *testing.T, conn db.Conn, relname string) int64 {
 	t.Helper()
 	rows, err := conn.Query(context.Background(),
 		"SELECT coalesce(n_tup_upd, 0) FROM pg_stat_user_tables WHERE relname = $1", relname)
+	assert.NoError(t, err)
+	defer rows.Close()
+	var n int64
+	for rows.Next() {
+		assert.NoError(t, rows.Scan(&n))
+	}
+	assert.NoError(t, rows.Err())
+	return n
+}
+
+// relationSize returns pg_relation_size for the given relation (the MAIN heap fork only,
+// excluding the TOAST relation) via Query + Next/Scan (db.Conn has no QueryRow). The
+// UNQUOTED relname is bound as $1 (text → regclass). Used by the seed size-fidelity guard.
+func relationSize(t *testing.T, conn db.Conn, relname string) int64 {
+	t.Helper()
+	rows, err := conn.Query(context.Background(), "SELECT pg_relation_size($1)", relname)
 	assert.NoError(t, err)
 	defer rows.Close()
 	var n int64
