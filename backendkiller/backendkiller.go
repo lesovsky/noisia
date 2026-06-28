@@ -7,10 +7,13 @@
 //
 // A single dedicated connection (not a pool) issues, in a single-threaded
 // rate-limited loop, unique literal server-side prepared statements of the form
-// "PREPARE noisia_bk_<i> AS SELECT 0 AS c0, 1 AS c1, …". Each PREPARE adds a
-// cached plan to the backend's plan cache; the statements are never DEALLOCATEd,
-// so the plan cache (and the backend's RSS) grows without bound. Eventually the
-// OOM killer reaps the backend and the postmaster restarts the whole instance.
+// "PREPARE noisia_bk_<i> AS SELECT 0 AS c0, 1 AS c1, …" and immediately EXECUTEs
+// each one once. PREPARE caches the statement's parse/rewrite tree; the first
+// EXECUTE builds and caches its generic plan as well, so each pair grows the
+// backend's plan cache (and RSS) faster than PREPARE alone. The statements are
+// never DEALLOCATEd, so the plan cache (and the backend's RSS) grows without
+// bound. Eventually the OOM killer reaps the backend and the postmaster restarts
+// the whole instance.
 //
 // The workload self-reports: it keeps an in-process counter of created statements
 // and prints an escalation panel every report-interval via logger.Infof. When its
@@ -157,15 +160,17 @@ func (w *workload) runReporter(ctx context.Context, done <-chan struct{}, start 
 	}
 }
 
-// runLoop is the single-threaded rate-limited PREPARE loop. It owns the Conn:
-// it issues each PREPARE and, when enabled, performs the periodic own-backend
-// memory read. It increments counter for each successful statement and publishes
-// the memory estimate via mem.
+// runLoop is the single-threaded rate-limited PREPARE+EXECUTE loop. It owns the
+// Conn: each iteration issues a PREPARE then EXECUTEs it once and, when enabled,
+// performs the periodic own-backend memory read. It increments counter once per
+// completed PREPARE+EXECUTE pair (the pair is one statement; EXECUTE is a memory
+// amplifier, not a separate metric) and publishes the memory estimate via mem.
 //
 // Returns nil on a clean ctx stop. On a connection loss after at least one
-// successful PREPARE (counter>0) while the context is still live, it logs the
-// climax line and returns nil. The first Exec error (counter==0) is returned as
-// an init error, so a broken builder cannot masquerade as a successful OOM event.
+// completed pair (counter>0) while the context is still live, it logs the climax
+// line and returns nil. An Exec error on the very first statement, in either the
+// PREPARE or the EXECUTE phase (counter==0), is returned as an init error, so a
+// broken builder cannot masquerade as a successful OOM event.
 func runLoop(ctx context.Context, conn db.Conn, logger log.Logger, config Config, counter, mem *atomic.Int64) error {
 	lim := rate.Limit(config.Rate)
 	if config.Rate == 0 {
@@ -178,28 +183,49 @@ func runLoop(ctx context.Context, conn db.Conn, logger log.Logger, config Config
 	var lastMemoryRead time.Time
 	var memWarned bool
 
+	// fail maps an Exec error (from either the PREPARE or the EXECUTE) to runLoop's
+	// return value: nil on a clean ctx stop, nil after logging the climax once at
+	// least one statement landed (the target was likely OOM-restarted), or an init
+	// error when the very first statement failed (a setup/builder defect, never a
+	// climax). Both phases share this because an OOM can reap the backend at either.
+	fail := func(err error) error {
+		// A clean ctx stop must not be reported as a failure.
+		if ctx.Err() != nil {
+			return nil
+		}
+
+		if counter.Load() > 0 {
+			logger.Infof("backend-killer: connection lost after %s, %d statements issued — target likely OOM-restarted", time.Since(start).Truncate(time.Second), counter.Load())
+			return nil
+		}
+
+		return fmt.Errorf("issue prepared statement failed: %s", sanitize(err))
+	}
+
 	for {
 		if limiter.Allow() {
 			q := buildPrepare(i, config.PlanSize)
+			id := i
 			i++
 
-			_, _, err := conn.Exec(ctx, q)
-			if err != nil {
-				// A clean ctx stop must not be reported as a failure.
-				if ctx.Err() != nil {
-					return nil
-				}
-
-				if counter.Load() > 0 {
-					logger.Infof("backend-killer: connection lost after %s, %d statements issued — target likely OOM-restarted", time.Since(start).Truncate(time.Second), counter.Load())
-					return nil
-				}
-
-				// First Exec failed with no prior success: this is a setup/builder
-				// defect, not a successful OOM event.
-				return fmt.Errorf("issue prepared statement failed: %s", sanitize(err))
+			if _, _, err := conn.Exec(ctx, q); err != nil {
+				return fail(err)
 			}
 
+			// EXECUTE the freshly prepared statement once. PREPARE caches only the
+			// parse/rewrite tree; the first EXECUTE builds and caches the generic
+			// plan as well (these statements have no bind args, so the generic plan
+			// is used immediately). That roughly doubles the per-statement memory and
+			// reaches OOM sooner. The result row is discarded.
+			if _, _, err := conn.Exec(ctx, buildExecute(id)); err != nil {
+				return fail(err)
+			}
+
+			// Count the statement only once its EXECUTE has also landed: the generic
+			// plan (the bulk of the leaked memory) is cached only after EXECUTE, and
+			// the counter==0 init-error guard in fail() must reject a first-EXECUTE
+			// builder defect just as it rejects a first-PREPARE one. counter therefore
+			// tracks completed PREPARE+EXECUTE pairs.
 			counter.Add(1)
 
 			// Optional own-backend memory read on the report cadence. Performed by
@@ -242,6 +268,13 @@ func buildPrepare(i int64, planSize int) string {
 		fmt.Fprintf(&b, "%d AS c%d", j, j)
 	}
 	return b.String()
+}
+
+// buildExecute builds the EXECUTE statement for the prepared statement id created
+// by buildPrepare: "EXECUTE noisia_bk_<i>". The statement takes no parameters, so
+// there is no bind argument and no injection surface.
+func buildExecute(i int64) string {
+	return fmt.Sprintf("EXECUTE noisia_bk_%d", i)
 }
 
 // readBackendMemory reads the total bytes used by the current backend's memory

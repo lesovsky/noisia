@@ -48,11 +48,12 @@ Each entry below is sized to be expanded into a user-spec.
 - **Status:** implemented (prepared-statement / plan-cache leak variant). Verified end-to-end on a
   stand: cgroup `CONSTRAINT_MEMCG` OOM of the backend → instance restart → climax line logged.
 - **Follow-up ideas:**
-  - Optionally `EXECUTE` each prepared statement once: `PREPARE` caches only the query tree, while the
-    generic plan is built/cached on first `EXECUTE` — executing would grow backend memory faster and
-    reach OOM sooner without needing a tightly capped stand.
-  - Document/observe that with swap enabled the approach degrades (panel rate → `0/s`) instead of a
-    prompt OOM (already captured in the README demo tips).
+  - ~~Optionally `EXECUTE` each prepared statement once~~ — **done:** every `PREPARE` is now
+    unconditionally followed by one `EXECUTE` (no flag). `PREPARE` caches only the parse/rewrite tree;
+    the first `EXECUTE` builds and caches the generic plan too (these statements take no bind args, so
+    the generic plan is used immediately), roughly doubling per-statement memory and reaching OOM sooner.
+  - ~~Document/observe that with swap enabled the approach degrades (panel rate → `0/s`) instead of a
+    prompt OOM~~ — **done:** captured in `docs/workloads/backend-killer.md` ("Disable swap" tip).
 
 ## Priority 2 — Disk → full
 

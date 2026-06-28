@@ -2,8 +2,9 @@
 
 How to drive a reliable `backend-killer` demo and tune the pressure so the OOM kill (and instance restart) happens predictably.
 
-`backend-killer` drives a single backend toward OOM by leaking prepared statements. How fast you reach
-the OOM kill (and the instance restart) depends on the stand:
+`backend-killer` drives a single backend toward OOM by leaking prepared statements — each one is
+`PREPARE`d and then `EXECUTE`d once, so the backend caches both the parse tree and the generic plan.
+How fast you reach the OOM kill (and the instance restart) depends on the stand:
 
 - **Cap the backend's memory** so OOM is reached in minutes, not hours: a systemd `MemoryMax=` on the
   PostgreSQL service (you then get a cgroup/`CONSTRAINT_MEMCG` OOM), a container `--memory=...` limit, or
