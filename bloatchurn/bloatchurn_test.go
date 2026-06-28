@@ -499,7 +499,11 @@ func Test_runWorkerWithConn_scatteredUpdateLoop(t *testing.T) {
 	// returns nil.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	conn := &stormConn{stopAfter: 8, stopSQL: "UPDATE", cancel: cancel}
+	// Sample a large number of churn iterations so the hot-prefix bound is exercised
+	// deterministically rather than probabilistically: a regression to rand.Int63n(rows) over
+	// the whole table would, across ~200 draws, almost certainly land at least one id in the
+	// tail (hotRows, rows] and fail this test.
+	conn := &stormConn{stopAfter: 200, stopSQL: "UPDATE", cancel: cancel}
 
 	const rows int64 = 500
 	hotRows := int64(float64(rows) * hotFraction) // 250
@@ -519,6 +523,7 @@ func Test_runWorkerWithConn_scatteredUpdateLoop(t *testing.T) {
 	assert.Contains(t, recorded[0].sql, "SET application_name = 'noisia'", "first Exec must be the SET")
 
 	updates := 0
+	var maxID int64
 	for _, e := range recorded {
 		if !strings.Contains(e.sql, "UPDATE") {
 			continue
@@ -529,9 +534,15 @@ func Test_runWorkerWithConn_scatteredUpdateLoop(t *testing.T) {
 		id, ok := e.args[1].(int64)
 		assert.True(t, ok, "id must be bound as an int64")
 		assert.GreaterOrEqual(t, id, int64(1), "random id must be >= 1")
+		// Positive exclusion of the tail: EVERY captured id must fall in the hot prefix.
 		assert.LessOrEqual(t, id, hotRows, "random id must stay in the hot prefix, never the tail")
+		if id > maxID {
+			maxID = id
+		}
 	}
-	assert.GreaterOrEqual(t, updates, 1, "the worker must have issued at least one UPDATE")
+	assert.GreaterOrEqual(t, updates, 200, "the worker must have issued the full sample of UPDATEs")
+	// The maximum id observed across the whole sample must never reach the tail (hotRows, rows].
+	assert.LessOrEqual(t, maxID, hotRows, "across the full sample no id ever landed in the tail (hotRows, rows]")
 	assert.Equal(t, int64(updates), churned.Load(), "churned must increment once per successful UPDATE")
 	assert.Equal(t, int64(1), sessions.Load(), "a fully-started worker counts as exactly one live session")
 }
@@ -591,37 +602,74 @@ func Test_runWorkerWithConn_initErrorVsDegraded(t *testing.T) {
 }
 
 func Test_runReporter_panelFormat(t *testing.T) {
-	// runReporter prints the panel each interval, reading only the atomics. Assert the exact
-	// field set — churned, dirtied, the (rate/min), elapsed — and that the panel carries NONE
-	// of the holder fields (held, holder-restarts). dirtied = churned * PayloadBytes.
-	logger := &captureLogger{}
+	t.Run("exact panel line", func(t *testing.T) {
+		// runReporter prints the panel each interval, reading only the atomics. Lock the FULL
+		// line exactly — field order, spacing, and the absence of any extra field — to
+		// "bloat-churn: churned=<N> dirtied=<bytes> (<rate>/min) elapsed=<Z>", with
+		// dirtied = churned * PayloadBytes. The exact match also proves the panel carries none
+		// of the copied holder fields; explicit negative checks below double-lock that.
+		logger := &captureLogger{}
 
-	var churned atomic.Int64
-	churned.Store(12)
-	const payloadBytes = 1024 // 12 * 1024 = 12288 bytes -> "12.0KB"
+		var churned atomic.Int64
+		churned.Store(12)
+		const payloadBytes = 1024 // 12 * 1024 = 12288 bytes -> "12.0KB"
 
-	done := make(chan struct{})
-	reporterDone := make(chan struct{})
-	interval := 30 * time.Millisecond
-	// elapsed origin three minutes back so rate = 12/3 = 4.0/min deterministically.
-	start := time.Now().Add(-3 * time.Minute)
-	go func() {
-		runReporter(context.Background(), done, start, interval, log.Logger(logger), payloadBytes, &churned)
-		close(reporterDone)
-	}()
+		done := make(chan struct{})
+		reporterDone := make(chan struct{})
+		interval := 30 * time.Millisecond
+		// elapsed origin three minutes back so rate = 12/3 = 4.0/min and elapsed truncates to
+		// 3m0s deterministically (the first tick fires ~30ms in, well under a second).
+		start := time.Now().Add(-3 * time.Minute)
+		go func() {
+			runReporter(context.Background(), done, start, interval, log.Logger(logger), payloadBytes, &churned)
+			close(reporterDone)
+		}()
 
-	time.Sleep(interval + 150*time.Millisecond)
-	close(done)
-	<-reporterDone
+		time.Sleep(interval + 150*time.Millisecond)
+		close(done)
+		<-reporterDone
 
-	lines := logger.infos()
-	assert.GreaterOrEqual(t, len(lines), 1, "at least one panel line must be printed")
+		lines := logger.infos()
+		assert.GreaterOrEqual(t, len(lines), 1, "at least one panel line must be printed")
 
-	first := lines[0]
-	assert.Contains(t, first, "bloat-churn: churned=12", "panel must report the churned count")
-	assert.Contains(t, first, "dirtied=12.0KB", "panel must report dirtied = churned * payload")
-	assert.Contains(t, first, "(4.0/min)", "panel must report churned/min")
-	assert.Contains(t, first, "elapsed=", "panel must report elapsed")
-	assert.NotContains(t, first, "held", "the panel must NOT carry the holder held field")
-	assert.NotContains(t, first, "holder-restarts", "the panel must NOT carry the holder-restarts field")
+		first := lines[0]
+		assert.Equal(t, "bloat-churn: churned=12 dirtied=12.0KB (4.0/min) elapsed=3m0s", first,
+			"the panel must render exactly, with fixed field order/spacing and no extra fields")
+		// Explicit negative checks: the copied holder fields must be gone (copy-bleed guard).
+		assert.NotContains(t, first, "held", "the panel must NOT carry the holder held field")
+		assert.NotContains(t, first, "holder-restarts", "the panel must NOT carry the holder-restarts field")
+	})
+
+	t.Run("sub-minute tick renders finite rate", func(t *testing.T) {
+		// On an early (sub-minute) tick the per-minute rate must render finitely, never +Inf:
+		// the divide guard exists precisely so the first tick, when elapsed is a tiny fraction
+		// of a minute, does not blow up. With nothing churned yet the rate is 0.0/min and
+		// dirtied is 0B.
+		logger := &captureLogger{}
+
+		var churned atomic.Int64 // 0 churned: rate must be 0.0/min, never +Inf
+		const payloadBytes = 1024
+
+		done := make(chan struct{})
+		reporterDone := make(chan struct{})
+		interval := 30 * time.Millisecond
+		start := time.Now() // elapsed << 1 minute at the first tick
+		go func() {
+			runReporter(context.Background(), done, start, interval, log.Logger(logger), payloadBytes, &churned)
+			close(reporterDone)
+		}()
+
+		time.Sleep(interval + 150*time.Millisecond)
+		close(done)
+		<-reporterDone
+
+		lines := logger.infos()
+		assert.GreaterOrEqual(t, len(lines), 1, "at least one panel line must be printed")
+
+		first := lines[0]
+		assert.Contains(t, first, "churned=0", "nothing churned yet")
+		assert.Contains(t, first, "dirtied=0B", "nothing dirtied yet")
+		assert.Contains(t, first, "(0.0/min)", "an early sub-minute tick must render a finite 0.0/min rate")
+		assert.NotContains(t, first, "Inf", "the rate must never render as +Inf on an early tick")
+	})
 }
