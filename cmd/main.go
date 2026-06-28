@@ -70,7 +70,7 @@ func main() {
 		checkpointStorm                 = kingpin.Flag("checkpoint-storm", "Run checkpoint-storm workload").Default("false").Envar("NOISIA_CHECKPOINT_STORM").Bool()
 		checkpointStormTableSize        = kingpin.Flag("checkpoint-storm.table-size", "Seed table size, base-2 (1GB = 1 GiB = 1073741824 bytes; lowercase kB rejected). Larger tables accumulate more dirty pages before each forced CHECKPOINT, so seeding can consume part of a short --duration budget — set --duration generously.").Default("1GB").Envar("NOISIA_CHECKPOINT_STORM_TABLE_SIZE").Bytes()
 		checkpointStormDirtyPct         = kingpin.Flag("checkpoint-storm.dirty-pct", "Percentage of rows dirtied before a synchronous CHECKPOINT is forced").Default("25").Envar("NOISIA_CHECKPOINT_STORM_DIRTY_PCT").Int()
-		checkpointStormPayloadBytes     = kingpin.Flag("checkpoint-storm.payload-bytes", "Payload bytes written per UPDATE (K)").Default("8192").Envar("NOISIA_CHECKPOINT_STORM_PAYLOAD_BYTES").Int()
+		checkpointStormPayloadBytes     = kingpin.Flag("checkpoint-storm.payload-bytes", "Payload bytes written per UPDATE; default 1024 stays inline so table-size maps to the heap (>= ~2KB TOASTs out-of-line)").Default("1024").Envar("NOISIA_CHECKPOINT_STORM_PAYLOAD_BYTES").Int()
 		checkpointStormRate             = kingpin.Flag("checkpoint-storm.rate", "UPDATE rate per second per worker; 0 means unlimited").Default("0").Envar("NOISIA_CHECKPOINT_STORM_RATE").Float64()
 		checkpointStormReportInterval   = kingpin.Flag("checkpoint-storm.report-interval", "Escalation panel print cadence").Default("1s").Envar("NOISIA_CHECKPOINT_STORM_REPORT_INTERVAL").Duration()
 		xminHorizonHolder               = kingpin.Flag("xmin-horizon-holder", "Run xmin-horizon-holder workload").Default("false").Envar("NOISIA_XMIN_HORIZON_HOLDER").Bool()
@@ -78,6 +78,12 @@ func main() {
 		xminHorizonHolderPayloadBytes   = kingpin.Flag("xmin-horizon-holder.payload-bytes", "Payload bytes written per UPDATE (K)").Default("8192").Envar("NOISIA_XMIN_HORIZON_HOLDER_PAYLOAD_BYTES").Int()
 		xminHorizonHolderRate           = kingpin.Flag("xmin-horizon-holder.rate", "UPDATE rate per second per worker; 0 means unlimited").Default("3000").Envar("NOISIA_XMIN_HORIZON_HOLDER_RATE").Float64()
 		xminHorizonHolderReportInterval = kingpin.Flag("xmin-horizon-holder.report-interval", "Escalation panel print cadence").Default("1s").Envar("NOISIA_XMIN_HORIZON_HOLDER_REPORT_INTERVAL").Duration()
+		bloatChurn                      = kingpin.Flag("bloat-churn", "Run bloat-churn workload").Default("false").Envar("NOISIA_BLOAT_CHURN").Bool()
+		bloatChurnTableSize             = kingpin.Flag("bloat-churn.table-size", "Seed table size, base-2 (1GB = 1 GiB = 1073741824 bytes; lowercase kB rejected). Larger tables surface observable bloat sooner as the rate attack outruns autovacuum — set --duration generously.").Default("1GB").Envar("NOISIA_BLOAT_CHURN_TABLE_SIZE").Bytes()
+		bloatChurnPayloadBytes          = kingpin.Flag("bloat-churn.payload-bytes", "Payload bytes written per UPDATE; default 1024 stays inline so table-size maps to the heap (>= ~2KB TOASTs out-of-line)").Default("1024").Envar("NOISIA_BLOAT_CHURN_PAYLOAD_BYTES").Int()
+		bloatChurnRate                  = kingpin.Flag("bloat-churn.rate", "UPDATE rate per second per worker; 0 means unlimited").Default("0").Envar("NOISIA_BLOAT_CHURN_RATE").Float64()
+		bloatChurnReportInterval        = kingpin.Flag("bloat-churn.report-interval", "Escalation panel print cadence").Default("1s").Envar("NOISIA_BLOAT_CHURN_REPORT_INTERVAL").Duration()
+		bloatChurnKeepTable             = kingpin.Flag("bloat-churn.keep-table", "Keep the bloated table on graceful exit for the post-stop repair demo").Default("false").Envar("NOISIA_BLOAT_CHURN_KEEP_TABLE").Bool()
 	)
 	kingpin.Parse()
 
@@ -149,6 +155,12 @@ func main() {
 		xminHorizonHolderPayloadBytes:   *xminHorizonHolderPayloadBytes,
 		xminHorizonHolderRate:           *xminHorizonHolderRate,
 		xminHorizonHolderReportInterval: *xminHorizonHolderReportInterval,
+		bloatChurn:                      *bloatChurn,
+		bloatChurnTableSize:             int64(*bloatChurnTableSize),
+		bloatChurnPayloadBytes:          *bloatChurnPayloadBytes,
+		bloatChurnRate:                  *bloatChurnRate,
+		bloatChurnReportInterval:        *bloatChurnReportInterval,
+		bloatChurnKeepTable:             *bloatChurnKeepTable,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

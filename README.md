@@ -16,6 +16,7 @@
 - `backend-killer` - single session leaks prepared statements (plan-cache growth) inflating its backend's memory until OOM-kill restarts the whole instance; a very large `--backend-killer.plan-size` makes each `PREPARE` heavy/slow.
 - `slot-bloat` - a single un-consumed physical replication slot pins WAL so `pg_wal` grows without bound → disk full → instance PANIC; the data never grows and checkpoints keep running, yet the disk still fills.
 - `wal-flood` - many parallel `UPDATE`-churn workers (`--jobs`) flood WAL on the primary by raw write rate, driving replication lag and — when recycle/archiving can't keep up — `pg_wal` growth toward disk-full; the visible-activity counterpart of `slot-bloat` (disk-full here is environment-dependent, not guaranteed).
+- `bloat-churn` - many parallel `UPDATE`-churn workers (`--jobs`) outrun a still-enabled autovacuum by raw rate, breaking HOT with an indexed `updated_at = now()` so heap **and** index bloat while the untouched table tail keeps `VACUUM` from truncating the file; the **remediable** rate-attack counterpart to `xmin-horizon-holder` — same symptom, but after stopping noisia the table is repairable with `VACUUM FULL` / `pg_repack` / `REINDEX CONCURRENTLY`.
 - ...see built-in help for more runtime options.
 
 #### Disclaimer
@@ -100,6 +101,7 @@ The escalating workloads each have a dedicated demo and tuning guide covering ho
 - [`docs/workloads/backend-killer.md`](docs/workloads/backend-killer.md) — drive a single backend to OOM and an instance restart; cap memory, disable swap, and turn up the plan pressure.
 - [`docs/workloads/slot-bloat.md`](docs/workloads/slot-bloat.md) — fill `pg_wal` with one forgotten replication slot until the disk is full; CLI flags, two stand recipes, and slot-crash recovery.
 - [`docs/workloads/wal-flood.md`](docs/workloads/wal-flood.md) — flood WAL with parallel `UPDATE`-churn workers; the honest env-dependent contract, the disk-full conditions, demo parameters, and how it differs from `slot-bloat`.
+- [`docs/workloads/bloat-churn.md`](docs/workloads/bloat-churn.md) — outrun autovacuum by raw rate to grow remediable heap+index bloat; the trio that builds it, the post-stop repair reveal (`VACUUM FULL` / `pg_repack` / `REINDEX CONCURRENTLY`), what to watch via pgstattuple, and how a rate attack differs from `xmin-horizon-holder`'s horizon attack.
 
 #### Contribution
 - PR's are welcome.

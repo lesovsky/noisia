@@ -141,6 +141,22 @@ justifies the slower payoff.
 ### bloat-churn
 - UPDATE/DELETE churn that outpaces autovacuum → measurable table/index bloat.
 - Teaches pgstattuple, pg_repack, `VACUUM FULL` and why it locks.
+- **Status:** implemented (008-feat-bloat-churn). A rate attack: autovacuum stays **enabled** and `--jobs`
+  scattered random-id `UPDATE` churn workers (per-worker connection) outrun it by raw rate (unbounded
+  `--bloat-churn.rate 0` default — a rate attack, not the horizon attack of `xmin-horizon-holder`). HOT is
+  broken by an indexed `updated_at = now()` on every UPDATE (heap **and** right-edge btree bloat); churn
+  touches only the lower half `[1, floor(0.5·rows)]` (`hotFraction` constant) so the live tail keeps `VACUUM`
+  from truncating the file and the bloat survives the exit. Panel:
+  `churned=<N> dirtied=<bytes> (<rate>/min) elapsed=<Z>` (`dirtied` = logical write pressure
+  `churned × payload`, **not** server table size). No superuser / managed-friendly (RDS / Cloud SQL /
+  Supabase / Neon — only connect + `CREATE` + `UPDATE`), but `pg_repack`/`pgcompacttable` may be unavailable
+  there while `VACUUM FULL`/`REINDEX CONCURRENTLY` are not. **Remediable** contract — the headline is the
+  post-stop repair reveal: stop noisia with `--bloat-churn.keep-table`, then `VACUUM` (reuse) /
+  `VACUUM FULL` / `pg_repack` / `pgcompacttable` (shrink file) / `REINDEX CONCURRENTLY` (shrink index) repair
+  the table — unlike `xmin-horizon-holder`, which is unrepairable while the holder lives. Verified by unit +
+  testcontainers integration (HOT broken via `n_tup_hot_upd/n_tup_upd ≈ 0`, untouched tail, `n_tup_upd`
+  growth, no-superuser success, `--jobs` honored, cleanup / keep-table); real bloat and shrink-after-stop are
+  manual stand demos, not CI. Demo-guide: docs/workloads/bloat-churn.md.
 
 ### xmin-horizon-holder (long-lived transaction)
 - One transaction lives for minutes holding an old snapshot, so vacuum cannot remove

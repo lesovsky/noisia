@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"github.com/lesovsky/noisia/backendkiller"
+	"github.com/lesovsky/noisia/bloatchurn"
 	"github.com/lesovsky/noisia/checkpointstorm"
 	"github.com/lesovsky/noisia/deadlocks"
 	"github.com/lesovsky/noisia/failconns"
@@ -83,6 +84,12 @@ type config struct {
 	xminHorizonHolderPayloadBytes   int
 	xminHorizonHolderRate           float64
 	xminHorizonHolderReportInterval time.Duration
+	bloatChurn                      bool
+	bloatChurnTableSize             int64
+	bloatChurnPayloadBytes          int
+	bloatChurnRate                  float64
+	bloatChurnReportInterval        time.Duration
+	bloatChurnKeepTable             bool
 }
 
 func runApplication(ctx context.Context, c config, log log.Logger) error {
@@ -266,6 +273,18 @@ func runApplication(ctx context.Context, c config, log log.Logger) error {
 			err := startXminHorizonHolderWorkload(ctx, c, log)
 			if err != nil {
 				log.Errorf("xmin-horizon-holder workload failed: %s", err)
+			}
+			wg.Done()
+		}()
+	}
+
+	if c.bloatChurn {
+		log.Info("start bloat-churn workload")
+		wg.Add(1)
+		go func() {
+			err := startBloatChurnWorkload(ctx, c, log)
+			if err != nil {
+				log.Errorf("bloat-churn workload failed: %s", err)
 			}
 			wg.Done()
 		}()
@@ -514,6 +533,25 @@ func startXminHorizonHolderWorkload(ctx context.Context, c config, logger log.Lo
 			Rate:           c.xminHorizonHolderRate,
 			ReportInterval: c.xminHorizonHolderReportInterval,
 			Jobs:           c.jobs,
+		}, logger,
+	)
+	if err != nil {
+		return err
+	}
+
+	return workload.Run(ctx)
+}
+
+func startBloatChurnWorkload(ctx context.Context, c config, logger log.Logger) error {
+	workload, err := bloatchurn.NewWorkload(
+		bloatchurn.Config{
+			Conninfo:       c.postgresConninfo,
+			TableSize:      c.bloatChurnTableSize,
+			PayloadBytes:   c.bloatChurnPayloadBytes,
+			Rate:           c.bloatChurnRate,
+			ReportInterval: c.bloatChurnReportInterval,
+			Jobs:           c.jobs,
+			KeepTable:      c.bloatChurnKeepTable,
 		}, logger,
 	)
 	if err != nil {
