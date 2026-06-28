@@ -266,8 +266,9 @@ func (w *workload) runWorker(ctx context.Context, updateSQL string, churned, ses
 // database, and it takes hotRows (not rows) so the hot-prefix bound is directly unit-testable.
 //
 // Each statement targets a RANDOM id = rand.Int63n(hotRows)+1 (scattered across the hot
-// prefix only, Decision 3), bound as $2; payload is a fixed zero-filled buffer bound as $1.
-// On each successful UPDATE it adds 1 to churned (the panel counter).
+// prefix only, Decision 3), bound as $2; payload is a fixed random (incompressible) buffer
+// bound as $1 (incompressible so the rewritten rows reach the requested on-disk size instead
+// of being TOAST-compressed away). On each successful UPDATE it adds 1 to churned (the panel counter).
 //
 // Returns nil on a clean ctx stop. On an UPDATE error under a live ctx after at least one
 // successful UPDATE anywhere (churned > 0), it logs a degradation warning, decrements sessions
