@@ -210,13 +210,16 @@ func TestWorkload_Run_tailUntouched(t *testing.T) {
 	hotRows := int64(float64(rowCount) * hotFraction)
 	assert.GreaterOrEqual(t, hotRows, int64(1), "hot-prefix bound must be at least 1")
 
-	// The tail seed instant: the tail is never churned, so its updated_at is the
-	// single seed now(). The table is committed in one transaction, so it is present
-	// the moment discover sees it.
+	// The tail's single seed instant: the seed INSERT stamps every row with one
+	// transaction now(), and the tail is never churned, so the whole tail shares
+	// exactly that one value. Read it as the tail's min (any aggregate would do) for
+	// the POSITIVE prefix-churn check only — NOT as the headline baseline. The table
+	// is committed in one transaction, so it is present the moment discover sees it.
 	tailInstant := scalarTime(t, obs,
-		fmt.Sprintf("SELECT max(updated_at) FROM %s WHERE id > $1", ident), hotRows)
+		fmt.Sprintf("SELECT min(updated_at) FROM %s WHERE id > $1", ident), hotRows)
 
-	// Bounded-poll until churn lands in the prefix strictly after the seed instant.
+	// Bounded-poll until churn lands in the prefix strictly after the seed instant —
+	// proves UPDATEs actually happened in the hot half.
 	var prefixMax time.Time
 	for i := 0; i < 500; i++ {
 		prefixMax = scalarTime(t, obs,
@@ -229,11 +232,15 @@ func TestWorkload_Run_tailUntouched(t *testing.T) {
 	assert.True(t, prefixMax.After(tailInstant),
 		"some prefix row must be churned after the seed instant")
 
-	// HEADLINE: no tail row was updated past the seed instant.
-	tailTouched := scalarInt64(t, obs,
-		fmt.Sprintf("SELECT count(*) FROM %s WHERE id > $1 AND updated_at > $2", ident), hotRows, tailInstant)
-	assert.Equal(t, int64(0), tailTouched,
-		"no tail row may be updated past the seed instant (live tail blocks VACUUM truncation)")
+	// HEADLINE (truncate-block, non-self-referential): the tail must FOREVER carry
+	// exactly ONE distinct updated_at value (the single seed now()). Any churn that
+	// touched a tail row — including a "churn the whole table" regression — would
+	// stamp a fresh now() and create a 2nd distinct value, failing this invariant.
+	// This does not depend on a tail-derived baseline or post-read churn timing.
+	tailDistinct := scalarInt64(t, obs,
+		fmt.Sprintf("SELECT count(DISTINCT updated_at) FROM %s WHERE id > $1", ident), hotRows)
+	assert.Equal(t, int64(1), tailDistinct,
+		"the tail must keep exactly one updated_at value (no tail row churned; live tail blocks VACUUM truncation)")
 
 	cancel()
 	assert.NoError(t, <-done)
@@ -291,10 +298,10 @@ func TestWorkload_Run_nTupUpdGrows(t *testing.T) {
 	}
 	assert.Greater(t, laterUpd, firstUpd, "n_tup_upd must strictly grow under load (scattered UPDATEs land)")
 
-	// Softer signal only (not a headline): dead tuples are non-negative. On a slow
-	// autovacuum they accumulate, but a fast one can reclaim them, so growth is not
-	// asserted here.
-	assert.GreaterOrEqual(t, nDeadTup(t, obs, table), int64(0), "n_dead_tup is a soft signal only")
+	// Softer signal only (not a headline): observe n_dead_tup without asserting. On a
+	// slow autovacuum dead tuples accumulate, but a fast one (variant A, env-dependent)
+	// can keep them low — so this is logged, never asserted.
+	t.Logf("n_dead_tup (soft signal, not asserted): %d", nDeadTup(t, obs, table))
 
 	cancel()
 	assert.NoError(t, <-done)
