@@ -69,6 +69,21 @@ func Test_buildPrepare(t *testing.T) {
 	assert.Regexp(t, `^PREPARE noisia_bk_\d+ AS SELECT (\d+ AS c\d+)(, \d+ AS c\d+)*$`, q0)
 }
 
+func Test_buildExecute(t *testing.T) {
+	e0 := buildExecute(0)
+	e7 := buildExecute(7)
+
+	// Statement name must match the one PREPARE created for the same id and be
+	// unique per id.
+	assert.Equal(t, "EXECUTE noisia_bk_0", e0)
+	assert.Equal(t, "EXECUTE noisia_bk_7", e7)
+	assert.NotEqual(t, e0, e7)
+
+	// Composed solely of the prefix and an int id — no bind args, no injection
+	// surface — including a large id where %d formatting could differ.
+	assert.Regexp(t, `^EXECUTE noisia_bk_\d+$`, buildExecute(1_000_000))
+}
+
 func Test_sanitize(t *testing.T) {
 	testcases := []struct {
 		name       string
@@ -195,14 +210,16 @@ func Test_runLoop_monotonicGrowth(t *testing.T) {
 // guard branches in runLoop without a real database. Only Exec is invoked
 // (ShowMemory is false in these tests, so Query is never called).
 type fakeConn struct {
-	execErr      error // returned once execOKBefore successful Execs have happened
-	execOKBefore int   // number of successful Execs before execErr is returned
-	calls        int
+	execErr      error    // returned once execOKBefore successful Execs have happened
+	execOKBefore int      // number of successful Execs before execErr is returned
+	calls        int      // total Exec calls (PREPARE + EXECUTE)
+	sqls         []string // every SQL string passed to Exec, in order
 }
 
 func (f *fakeConn) Begin(ctx context.Context) (db.Tx, error) { panic("not implemented") }
 func (f *fakeConn) Exec(ctx context.Context, sql string, args ...interface{}) (int64, string, error) {
 	f.calls++
+	f.sqls = append(f.sqls, sql)
 	if f.calls > f.execOKBefore {
 		return 0, "", f.execErr
 	}
@@ -213,9 +230,32 @@ func (f *fakeConn) Query(ctx context.Context, sql string, args ...interface{}) (
 }
 func (f *fakeConn) Close() error { return nil }
 
+func Test_runLoop_executeFollowsPrepare(t *testing.T) {
+	// Each loop iteration issues PREPARE then EXECUTE for the same statement id.
+	// Stop after the second PREPARE so the recorded SQL is deterministic.
+	conn := &fakeConn{execErr: fmt.Errorf("connection reset by peer"), execOKBefore: 2}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var counter, mem atomic.Int64
+	config := Config{Conninfo: "x", Rate: 0, PlanSize: 2, ReportInterval: time.Second}
+
+	err := runLoop(ctx, conn, log.NewDefaultLogger("error"), config, &counter, &mem)
+	assert.NoError(t, err)
+
+	// PREPARE for id 0, then EXECUTE for the same id 0, then PREPARE for id 1 (which fails).
+	assert.True(t, strings.HasPrefix(conn.sqls[0], "PREPARE noisia_bk_0 "))
+	assert.Equal(t, "EXECUTE noisia_bk_0", conn.sqls[1])
+	assert.True(t, strings.HasPrefix(conn.sqls[2], "PREPARE noisia_bk_1 "))
+}
+
 func Test_runLoop_climaxAfterSuccess(t *testing.T) {
 	// Decision 5: an Exec error under a live ctx with counter>0 is the climax —
-	// runLoop logs the climax line and returns nil.
+	// runLoop logs the climax line and returns nil. Here the error lands on the
+	// EXECUTE of the second statement: PREPARE(0) ok, EXECUTE(0) ok, PREPARE(1) ok,
+	// EXECUTE(1) fails. counter tracks completed PREPARE+EXECUTE pairs, so the first
+	// pair leaves it at 1.
 	conn := &fakeConn{execErr: fmt.Errorf("connection reset by peer"), execOKBefore: 3}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -226,7 +266,28 @@ func Test_runLoop_climaxAfterSuccess(t *testing.T) {
 
 	err := runLoop(ctx, conn, log.NewDefaultLogger("error"), config, &counter, &mem)
 	assert.NoError(t, err)
-	assert.Equal(t, int64(3), counter.Load())
+	assert.Equal(t, int64(1), counter.Load())
+	// The failing call was an EXECUTE — an OOM during plan caching is a valid climax.
+	assert.True(t, strings.HasPrefix(conn.sqls[len(conn.sqls)-1], "EXECUTE "))
+}
+
+func Test_runLoop_firstExecuteError(t *testing.T) {
+	// Mirror of Test_runLoop_firstExecError on the EXECUTE phase: PREPARE(0) ok,
+	// then EXECUTE(0) fails with no completed pair yet (counter==0). A first-EXECUTE
+	// builder defect must surface as an init error, never as a climax.
+	conn := &fakeConn{execErr: fmt.Errorf("prepared statement does not exist"), execOKBefore: 1}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var counter, mem atomic.Int64
+	config := Config{Conninfo: "x", Rate: 0, PlanSize: 2, ReportInterval: time.Second}
+
+	err := runLoop(ctx, conn, log.NewDefaultLogger("error"), config, &counter, &mem)
+	assert.Error(t, err)
+	assert.Equal(t, int64(0), counter.Load())
+	// The failure was on the EXECUTE, not the PREPARE.
+	assert.True(t, strings.HasPrefix(conn.sqls[len(conn.sqls)-1], "EXECUTE "))
 }
 
 func Test_runLoop_firstExecError(t *testing.T) {
