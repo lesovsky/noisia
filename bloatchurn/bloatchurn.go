@@ -290,7 +290,15 @@ func runWorkerWithConn(ctx context.Context, conn db.Conn, logger log.Logger, con
 	}
 	limiter := rate.NewLimiter(lim, 1)
 
+	// The payload must be INCOMPRESSIBLE (random bytes, not zeros): an all-zeros bytea
+	// compresses to almost nothing, so a payload at/above the ~2KB TOAST threshold would be
+	// compressed away instead of adding the expected on-disk write pressure; random bytes
+	// keep the dirtied bytes honest. Filled once and reused for every UPDATE — no per-statement
+	// cost, and re-updating with the same buffer still produces a fresh dead tuple every time.
 	payload := make([]byte, config.PayloadBytes)
+	for i := range payload {
+		payload[i] = byte(rand.Intn(256))
+	}
 
 	for {
 		if err := limiter.Wait(ctx); err != nil {
@@ -401,9 +409,16 @@ func prepare(ctx context.Context, conn db.Conn, tableIdent string, rows int64, p
 		return err
 	}
 
-	// The payload content is intentionally a fixed zero-filled buffer: dead tuples are
-	// produced by the UPDATE regardless of byte equality, so the value is irrelevant.
+	// The payload must be INCOMPRESSIBLE (random bytes, not zeros): an all-zeros bytea
+	// compresses to almost nothing, so the seed would silently fall far short of the requested
+	// on-disk size (with the inline default it stays in the heap; if a user raises PayloadBytes
+	// above the ~2KB TOAST threshold, random bytes keep the size honest in the TOAST fork rather
+	// than vanishing). The buffer is reused for every row — heap tuples are not deduplicated, so
+	// the heap still reaches the target size.
 	payload := make([]byte, payloadBytes)
+	for i := range payload {
+		payload[i] = byte(rand.Intn(256))
+	}
 	// Seed in a single set-based statement: one server-side round-trip instead of N
 	// network round-trips, which matters for large N over a remote link.
 	insertSQL := fmt.Sprintf("INSERT INTO %s (id, payload, updated_at) SELECT g, $1, now() FROM generate_series(1, $2) AS g", tableIdent)

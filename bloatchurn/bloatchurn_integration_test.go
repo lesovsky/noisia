@@ -114,6 +114,57 @@ func TestWorkload_Run_seedShape(t *testing.T) {
 	assert.NoError(t, <-done)
 }
 
+func TestWorkload_Run_seedSizeFaithful(t *testing.T) {
+	// REGRESSION GUARD: the seed must actually reach the requested on-disk size. The
+	// original bug filled payload with ZEROS at PayloadBytes=8192 — >= ~2KB so the bytea
+	// TOASTed out-of-line and all-zeros compressed to ~nothing, leaving the MAIN heap
+	// holding only toast pointers (~2% of target). The fix is an INLINE default
+	// (PayloadBytes=1024, below the TOAST threshold) filled with RANDOM (incompressible)
+	// bytes. Assert pg_relation_size('<table>') (main heap only) is at least 0.6× TableSize:
+	// comfortably below the real ~1.0-1.1× (page/fillfactor overhead) yet far above the
+	// old TOASTed-away behavior (<0.02×), so it fails the bug and passes the fix.
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
+	purgeBloatchurn(t, obs)
+
+	config := Config{
+		Conninfo:       db.TestConninfo,
+		TableSize:      minTableSize,
+		PayloadBytes:   1024, // inline (< ~2KB TOAST threshold): table-size maps to the heap
+		Rate:           3000,
+		ReportInterval: 200 * time.Millisecond,
+		Jobs:           2,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w, err := NewWorkload(config, log.NewDefaultLogger("error"))
+	assert.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+
+	// The whole seed (CREATE + INDEX + INSERT) commits in one transaction, so the moment
+	// the table is visible the full heap is already on disk.
+	table := waitForBloatchurnTable(t, obs)
+	assert.NotEmpty(t, table, "seed table must appear")
+
+	heapSize := scalarInt64(t, obs, "SELECT pg_relation_size($1)", table)
+	// 0.6× the target, computed in integer arithmetic (minTableSize is a constant, so a
+	// float literal would not fold to an int64). Robust to page/fillfactor overhead, yet far
+	// above the old TOASTed-away heap (<0.02×).
+	minExpected := int64(minTableSize) * 6 / 10
+	t.Logf("seed heap pg_relation_size = %d bytes (target %d, floor %d)", heapSize, int64(minTableSize), minExpected)
+	assert.GreaterOrEqual(t, heapSize, minExpected,
+		"seed heap (%d bytes) must reach ~table-size, proving payload stays inline and is not TOASTed/compressed away (target %d, floor %d)",
+		heapSize, int64(minTableSize), minExpected)
+
+	cancel()
+	assert.NoError(t, <-done)
+}
+
 func TestWorkload_Run_hotBroken(t *testing.T) {
 	// HEADLINE (bloat-churn specific): indexing updated_at and setting it on every
 	// UPDATE forbids HOT. After churn n_tup_upd > 0 while n_tup_hot_upd / n_tup_upd

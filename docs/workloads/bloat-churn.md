@@ -130,10 +130,14 @@ everywhere**. On a managed stand, plan the repair act around `VACUUM FULL` / `RE
 |------|-------|------|---------|---------|
 | `--bloat-churn` | `NOISIA_BLOAT_CHURN` | bool | `false` | Enable the workload |
 | `--bloat-churn.table-size` | `NOISIA_BLOAT_CHURN_TABLE_SIZE` | bytes (base-2) | `1GB` | Target seed-table size; floor `64MiB`. Bigger surfaces observable bloat sooner as the rate attack outruns autovacuum |
-| `--bloat-churn.payload-bytes` | `NOISIA_BLOAT_CHURN_PAYLOAD_BYTES` | int | `8192` | Payload size (bytes) written per UPDATE; floor `1` |
+| `--bloat-churn.payload-bytes` | `NOISIA_BLOAT_CHURN_PAYLOAD_BYTES` | int | `1024` | Payload size (bytes) written per UPDATE; floor `1`. The default stays **inline** (below the ~2KB TOAST threshold) so `--table-size` maps faithfully to the main heap; raising it to ≥ ~2KB makes the payload **TOAST** out-of-line (the size then lands in the TOAST fork, not the heap) |
 | `--bloat-churn.rate` | `NOISIA_BLOAT_CHURN_RATE` | float64 | `0` | UPDATEs/sec **per worker**; `0` = unbounded (`rate.Inf`). Unbounded by design — this is a rate attack (contrast `xmin-horizon-holder`'s `3000`) |
 | `--bloat-churn.report-interval` | `NOISIA_BLOAT_CHURN_REPORT_INTERVAL` | duration | `1s` | How often the self-report panel is printed |
 | `--bloat-churn.keep-table` | `NOISIA_BLOAT_CHURN_KEEP_TABLE` | bool | `false` | Keep the bloated table on graceful exit for the post-stop repair demo (otherwise it is dropped) |
+
+`--table-size` maps to the **main heap** — watch it with `pg_relation_size` / `\dt+`. The default payload is
+**inline**, so a 64 MiB target yields a ~64 MiB heap; `--bloat-churn.payload-bytes` ≥ ~2KB will **TOAST**, and
+the requested size then lands in the **TOAST fork** rather than the main heap.
 
 The churn worker count comes from the **global** `--jobs` flag — there is **no per-workload jobs flag** — and
 the workload runs under the shared `--duration` timeout like every other noisia workload. The hot fraction is

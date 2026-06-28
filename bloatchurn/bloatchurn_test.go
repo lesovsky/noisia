@@ -277,8 +277,13 @@ func Test_prepare_emitsCreateAndSeedSQL(t *testing.T) {
 		"seed must be a single set-based INSERT ... SELECT with payload as $1, now() for updated_at and row count as $2")
 	// The row count must be BOUND as $2, not string-interpolated into the SQL text.
 	assert.NotContains(t, insert.sql, fmt.Sprintf("%d", rows), "row count must not be interpolated into the SQL text")
-	assert.Equal(t, []interface{}{make([]byte, payloadBytes), rows}, insert.args,
-		"payload must be a fixed zero-filled buffer ($1) and the row count bound as $2")
+	// payload ($1) must be a []byte of the configured length; its content is now random
+	// (incompressible) so the seed reaches the requested on-disk size, so do not assert exact bytes.
+	assert.Len(t, insert.args, 2, "INSERT must bind payload ($1) and the row count ($2)")
+	payloadArg, ok := insert.args[0].([]byte)
+	assert.True(t, ok, "payload ($1) must be bound as a []byte")
+	assert.Len(t, payloadArg, payloadBytes, "payload ($1) must be a buffer of PayloadBytes length")
+	assert.Equal(t, rows, insert.args[1], "the row count must be bound as $2")
 }
 
 // recordingConn is a db.Conn double that records every SQL statement Exec'd, so a test
