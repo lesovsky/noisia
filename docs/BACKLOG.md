@@ -183,3 +183,15 @@ justifies the slower payoff.
 - Savepoint abuse → SubtransSLRU contention and suboverflowed snapshots → mysterious
   global slowdown with no visible blocking.
 - Obscure but impressive demo for advanced sessions.
+- **Status:** deferred — **not** planned. Unlike every other workload in this backlog
+  (OOM, disk-full, WAL volume, deadlocks, contention, bloat — all built on
+  version-invariant mechanisms), the visible effect here depends on the specific SLRU
+  implementation, which the community is actively reworking. PG17 added configurable SLRU
+  cache sizes (`subtransaction_buffers` et al.) **and banked SLRU locks** (partitioned
+  `SubtransSLRULock`), both of which materially soften the exact contention this demo
+  relies on; PG18+ softens it further. A workload that demonstrates on ≤PG16 but quietly
+  no-ops on the version a trainee actually spins up would violate the slow-line's core
+  contract ("escalate to a hard limit, watch the system march toward failure") — worse
+  than niche, it would be non-deterministic in a way an instructor can't explain. The
+  target audience is also migrating off PG15. Revisit only if a version-stable way to
+  force the effect emerges.
