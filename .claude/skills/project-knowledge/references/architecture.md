@@ -36,7 +36,7 @@ The repo is a Go module (`github.com/lesovsky/noisia`) with one package per work
 ├── rollbacks/         [workload: rollbacks]
 ├── waitxacts/         [workload: waiting/locking transactions]
 ├── deadlocks/         [workload: deadlocks]
-├── tempfiles/         [workload: temp-file spill]
+├── tempfiles/         [workload: seeds a wide incompressible dataset table and sorts it (ORDER BY random()) so the sort exceeds the DEFAULT work_mem and spills to on-disk temp files — NO artificial work_mem lowering, so raising work_mem removes the spill (the book chapter-6 remediation demo). Keeps the async pool-per-worker model as the deliberate ADR-009-1 exception to ADR-003-1]
 ├── terminate/         [workload: terminate/cancel backends]
 ├── failconns/         [workload: exhaust connections]
 ├── forkconns/         [workload: excessive backend forking]
