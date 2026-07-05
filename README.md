@@ -9,7 +9,7 @@
 - `rollbacks` - fake invalid queries that generate errors and increase rollbacks counter.
 - `waiting transactions` - transactions that lock hot-write tables and then idle, leading to other transactions getting stuck
 - `deadlocks` - simultaneous transactions where each holds locks that the other transactions want.
-- `temporary files` - queries that produce on-disk temporary files due to lack of `work_mem`.
+- `temporary files` - queries that sort a seeded dataset larger than `work_mem`, spilling to on-disk temporary files on a default-configured server; raising `work_mem` (per-role/-database) makes the same query run in memory — the spill disappears (the remediation demo).
 - `terminate backends` - terminate random backends (or queries) using `pg_terminate_backend()`, `pg_cancel_backend()`.
 - `failed connections` - exhaust all available connections (other clients unable to connect to Postgres).
 - `fork connections` - execute single, short query in a dedicated connection (lead to excessive forking of Postgres backends).
@@ -102,6 +102,7 @@ The escalating workloads each have a dedicated demo and tuning guide covering ho
 - [`docs/workloads/slot-bloat.md`](docs/workloads/slot-bloat.md) — fill `pg_wal` with one forgotten replication slot until the disk is full; CLI flags, two stand recipes, and slot-crash recovery.
 - [`docs/workloads/wal-flood.md`](docs/workloads/wal-flood.md) — flood WAL with parallel `UPDATE`-churn workers; the honest env-dependent contract, the disk-full conditions, demo parameters, and how it differs from `slot-bloat`.
 - [`docs/workloads/bloat-churn.md`](docs/workloads/bloat-churn.md) — outrun autovacuum by raw rate to grow remediable heap+index bloat; the trio that builds it, the post-stop repair reveal (`VACUUM FULL` / `pg_repack` / `REINDEX CONCURRENTLY`), what to watch via pgstattuple, and how a rate attack differs from `xmin-horizon-holder`'s horizon attack.
+- [`docs/workloads/tempfiles.md`](docs/workloads/tempfiles.md) — spill on-disk temp files by sorting a seeded dataset larger than `work_mem` on a default-configured server; how to watch `temp_files`/`temp_bytes` and `log_temp_files`, and the headline remediation — raise `work_mem` and the spill disappears.
 
 #### Contribution
 - PR's are welcome.
