@@ -17,12 +17,12 @@ import (
 //     spills to disk on the default work_mem — with no SET work_mem anywhere;
 //  2. the per-run dataset table is dropped on exit (no noisia_tempfiles_% left behind).
 //
-// The seed is shrunk for speed but kept well above the default 4MB work_mem so the sort still
-// spills. datasetSize is restored afterwards.
+// The seed is shrunk for speed (via Config.TableSize) but kept well above the default 4MB
+// work_mem so the sort still spills.
 func TestWorkload_Run_producesTempFiles(t *testing.T) {
-	orig := datasetSize
-	datasetSize = 24 << 20
-	defer func() { datasetSize = orig }()
+	// A shrunk-for-speed dataset, still comfortably above the default 4MB work_mem so the
+	// sort spills. Reused in the Config below and the skip guard.
+	const testTableSize int64 = 24 << 20
 
 	conn, err := db.Connect(context.Background(), db.TestConninfo)
 	assert.NoError(t, err)
@@ -32,8 +32,8 @@ func TestWorkload_Run_producesTempFiles(t *testing.T) {
 	// tuned with a work_mem at/above the (shrunk) dataset, the sort would not spill and the
 	// assertion below would fail confusingly — skip loudly instead.
 	workMemKB := scalarInt(t, conn, "SELECT setting::bigint FROM pg_settings WHERE name = 'work_mem'")
-	if int64(workMemKB)*1024 >= datasetSize {
-		t.Skipf("work_mem (%d kB) is >= dataset (%d bytes); the sort would not spill", workMemKB, datasetSize)
+	if int64(workMemKB)*1024 >= testTableSize {
+		t.Skipf("work_mem (%d kB) is >= dataset (%d bytes); the sort would not spill", workMemKB, testTableSize)
 	}
 
 	// Clean slate independent of test order: drop any noisia_tempfiles_% tables an earlier
@@ -44,7 +44,7 @@ func TestWorkload_Run_producesTempFiles(t *testing.T) {
 	assert.NoError(t, err)
 
 	w, err := NewWorkload(
-		Config{Conninfo: db.TestConninfo, Jobs: 2, Rate: 5},
+		Config{Conninfo: db.TestConninfo, Jobs: 2, Rate: 5, TableSize: testTableSize},
 		log.NewDefaultLogger("error"),
 	)
 	assert.NoError(t, err)

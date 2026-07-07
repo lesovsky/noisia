@@ -18,9 +18,11 @@ func TestConfig_validate(t *testing.T) {
 		valid  bool
 		config Config
 	}{
-		{valid: true, config: Config{Jobs: 1, Rate: 1}},
-		{valid: false, config: Config{Jobs: 0, Rate: 1}},
-		{valid: false, config: Config{Jobs: 1, Rate: 0}},
+		{valid: true, config: Config{Jobs: 1, Rate: 1, TableSize: 16 << 20}}, // exactly the floor passes
+		{valid: false, config: Config{Jobs: 0, Rate: 1, TableSize: 64 << 20}},
+		{valid: false, config: Config{Jobs: 1, Rate: 0, TableSize: 64 << 20}},
+		{valid: false, config: Config{Jobs: 1, Rate: 1, TableSize: 8 << 20}}, // below the 16 MiB floor
+		{valid: false, config: Config{Jobs: 1, Rate: 1, TableSize: 0}},       // non-positive, subsumed by the floor
 	}
 
 	for _, tc := range testcases {
@@ -30,6 +32,10 @@ func TestConfig_validate(t *testing.T) {
 			assert.Error(t, tc.config.validate())
 		}
 	}
+
+	// The floor error must name the flag so the operator knows which knob to turn (AC).
+	err := Config{Jobs: 1, Rate: 1, TableSize: 8 << 20}.validate()
+	assert.ErrorContains(t, err, "--tempfiles.table-size")
 }
 
 func TestNewWorkload(t *testing.T) {
@@ -37,8 +43,9 @@ func TestNewWorkload(t *testing.T) {
 		valid bool
 		cfg   Config
 	}{
-		{valid: true, cfg: Config{Jobs: 1, Rate: 1}},
-		{valid: false, cfg: Config{Jobs: 1, Rate: 0}},
+		{valid: true, cfg: Config{Jobs: 1, Rate: 1, TableSize: 16 << 20}},
+		{valid: false, cfg: Config{Jobs: 1, Rate: 0, TableSize: 64 << 20}},
+		{valid: false, cfg: Config{Jobs: 1, Rate: 1, TableSize: 8 << 20}}, // below the floor
 	}
 
 	for _, tc := range testcases {
@@ -70,7 +77,7 @@ func (f *fakeDB) Exec(ctx context.Context, sql string, args ...interface{}) (int
 func (f *fakeDB) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
 	return nil, nil
 }
-func (f *fakeDB) Close() {}
+func (f *fakeDB) Close()     {}
 func (f *fakeDB) count() int { f.mu.Lock(); defer f.mu.Unlock(); return len(f.execs) }
 func (f *fakeDB) sqls() []string {
 	f.mu.Lock()

@@ -10,7 +10,8 @@
 // "size work_mem correctly" remediation can actually be demonstrated.
 //
 // On start the workload seeds its own per-run dataset table
-// (noisia_tempfiles_<random8>, a wide incompressible (id, payload) heap of tens of MiB)
+// (noisia_tempfiles_<random8>, a wide incompressible (id, payload) heap whose size is
+// configurable via --tempfiles.table-size, default 64 MiB)
 // on a dedicated connection, following the bloatchurn/slotbloat convention. It then fans
 // out Jobs workers; each opens its own connection pool and, in a rate-limited loop, fires
 // a big "ORDER BY random()" sort over the dataset in a dedicated goroutine — asynchronously,
@@ -40,19 +41,19 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// datasetSize is the target on-disk size of the per-run dataset table. A full sort of the
-// table must comfortably exceed the default work_mem (4MB) so every query spills to an
-// external merge on a default-configured server; 64 MiB leaves a wide margin (robust to a
-// future default-work_mem bump) while still seeding fast enough for short runs. It is a var,
-// not a const, only so tests can shrink the seed for speed.
-var datasetSize int64 = 64 << 20
-
 const (
+	// minTableSize is the validate() floor (16 MiB). A full sort of the dataset must
+	// comfortably exceed the default work_mem (4MB) so every query spills to an external
+	// merge on a default-configured server; 16 MiB is a 4× margin (robust to a future
+	// default-work_mem bump). Below it the sort could run in memory and silently never
+	// spill — the no-op the guard exists to prevent.
+	minTableSize int64 = 16 << 20
+
 	// payloadBytes is the width of the incompressible payload column per row. It is kept
 	// inline (below the ~2KB TOAST threshold) so the bytes sit in the heap and are carried
 	// through the sort. The buffer MUST be filled with random (incompressible) bytes, never
 	// zeros: an all-zeros bytea pglz-compresses to almost nothing, so the table — and the
-	// sort volume — would collapse far below datasetSize and might not spill (ADR-008-2).
+	// sort volume — would collapse far below the target TableSize and might not spill (ADR-008-2).
 	payloadBytes int = 256
 
 	// headerBytesPerRow is the rough per-row overhead (≈ 24-byte tuple header + 8-byte id
@@ -70,6 +71,13 @@ type Config struct {
 	Jobs uint16
 	// Rate defines rate interval for queries executing (queries per second, per worker).
 	Rate float64
+	// TableSize defines the target on-disk size in bytes of the per-run dataset table
+	// (from --tempfiles.table-size, base-2 parsed; default 64 MiB). It is converted to a
+	// row count via a payload-aware estimate. A full sort of the table must comfortably
+	// exceed the default work_mem (4MB) so every query spills to an external merge, and the
+	// payload MUST stay incompressible (random bytes, never zeros) or the table — and the
+	// sort volume — would collapse below the target and might not spill (ADR-008-2).
+	TableSize int64
 }
 
 // validate method checks workload configuration settings.
@@ -80,6 +88,12 @@ func (c Config) validate() error {
 
 	if c.Rate <= 0 {
 		return fmt.Errorf("temp files queries rate must be positive")
+	}
+
+	// Floor guard: below 16 MiB the sort could fit in the default work_mem and silently never
+	// spill, defeating the workload. Subsumes the non-positive case (minTableSize > 0).
+	if c.TableSize < minTableSize {
+		return fmt.Errorf("dataset table size (%d) must be at least %d bytes: raise --tempfiles.table-size", c.TableSize, minTableSize)
 	}
 
 	return nil
@@ -136,9 +150,9 @@ func (w *workload) Run(ctx context.Context) error {
 	// cancelled at exit and a drop on a cancelled ctx would fail (ADR-002-2).
 	defer w.cleanup(w.tableIdent)
 
-	rows := rowsForSize(datasetSize, int64(payloadBytes))
+	rows := rowsForSize(w.config.TableSize, int64(payloadBytes))
 	w.logger.Infof("tempfiles: seeding dataset %s (~%s, %d rows) — queries sort it and spill temp files; watch pg_stat_database.temp_files/temp_bytes and log_temp_files",
-		w.tableIdent, formatBytes(datasetSize), rows)
+		w.tableIdent, formatBytes(w.config.TableSize), rows)
 	err = prepare(ctx, conn, w.tableIdent, rows)
 	_ = conn.Close() // the seed connection is not needed once the dataset exists
 	if err != nil {
@@ -260,7 +274,7 @@ func prepare(ctx context.Context, conn db.Conn, tableIdent string, rows int64) e
 
 	// The payload must be INCOMPRESSIBLE (random bytes, not zeros): an all-zeros bytea
 	// compresses to almost nothing, so the seed — and the sort volume — would fall far short
-	// of datasetSize and might not spill (ADR-008-2). The buffer is filled once and reused for
+	// of the target TableSize and might not spill (ADR-008-2). The buffer is filled once and reused for
 	// every row (heap tuples are not deduplicated, so the table still reaches the target size).
 	payload := make([]byte, payloadBytes)
 	for i := range payload {
