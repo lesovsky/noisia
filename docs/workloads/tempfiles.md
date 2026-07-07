@@ -8,7 +8,8 @@ disappear. This guide covers the mechanism, the headline remediation reveal, wha
 **outside** noisia, the CLI, and the honest environment-dependent contract.
 
 `tempfiles` seeds its own per-run dataset table `noisia_tempfiles_<random8>`
-(`id bigint, payload bytea`, a wide **incompressible** heap of tens of MiB), then fans out
+(`id bigint, payload bytea`, a wide **incompressible** heap sized by `--tempfiles.table-size`,
+default 64 MiB), then fans out
 `--jobs` workers that loop a big `SELECT id, payload FROM <t> ORDER BY random()`. On a
 **default-configured** server (`work_mem = 4MB`) that sort is far larger than `work_mem`, so
 PostgreSQL performs an **external merge sort** and writes a temporary file for every execution.
@@ -18,10 +19,10 @@ output.
 
 ## Mechanism
 
-- **A dataset bigger than `work_mem`.** The seed table is sized (hardcoded, ~64 MiB) so a full
-  sort of it comfortably exceeds the default 4MB `work_mem`. The payload is filled with random
-  (incompressible) bytes and kept inline, so the on-disk size — and therefore the sort volume —
-  is honest and does not compress away.
+- **A dataset bigger than `work_mem`.** The seed table is sized by `--tempfiles.table-size`
+  (default 64 MiB, floor 16 MiB) so a full sort of it comfortably exceeds the default 4MB
+  `work_mem`. The payload is filled with random (incompressible) bytes and kept inline, so the
+  on-disk size — and therefore the sort volume — is honest and does not compress away.
 - **A sort that must spill.** `ORDER BY random()` carries the whole `(id, payload)` row set
   through the sort. When the sort's working set exceeds `work_mem`, PostgreSQL switches from an
   in-memory `quicksort` to an on-disk `external merge` and writes temp files.
@@ -78,12 +79,19 @@ from other concurrent activity in the same database.
 
 - `--tempfiles` — enable the workload.
 - `--tempfiles.rate` — queries per second, **per worker** (default `1`).
+- `--tempfiles.table-size` (env `NOISIA_TEMP_FILES_TABLE_SIZE`) — target on-disk size of the
+  per-run dataset table, base-2 (`64MB`/`512MB`/`1GB`; lowercase `kB` rejected). Default `64MB`,
+  floor `16 MiB`. See "Tuning" for sizing it to drive an IO-bound regime.
 - `--jobs` — number of workers.
-
-The dataset size is not configurable — it is fixed above the default `work_mem` on purpose.
 
 ## Tuning & the honest contract
 
+- **CPU-bound vs IO-bound — size the dataset to RAM.** The default 64 MiB is enough to *spill*
+  but too small to be **IO-bound**: each sort finishes fast and its temp files stay in the OS
+  page cache, so the run saturates CPU, not disk. To reproduce genuine disk-IO pressure (where
+  "raise `work_mem`" is a visible IO remediation), raise `--tempfiles.table-size` so concurrent
+  sorts' live temp exceeds the page cache — that threshold depends on the target host's RAM, so
+  size it to the machine (e.g. `512MB`/`1GB`+ and a few `--jobs`) and watch `iostat %util` climb.
 - **Scaling the load.** Raise `--jobs` and/or `--tempfiles.rate` to increase the temp-file
   production rate. Note a ceiling: each worker uses its own connection pool
   (`max(4, NumCPU)` connections by default), so on a long, high-rate run the number of
