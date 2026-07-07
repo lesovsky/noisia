@@ -40,6 +40,7 @@ type config struct {
 	deadlocks                       bool
 	tempFiles                       bool
 	tempFilesRate                   float64
+	tempFilesTableSize              int64
 	terminate                       bool
 	terminateInterval               time.Duration
 	terminateRate                   uint16
@@ -361,9 +362,10 @@ func startDeadlocksWorkload(ctx context.Context, c config, logger log.Logger) er
 func startTempFilesWorkload(ctx context.Context, c config, logger log.Logger) error {
 	workload, err := tempfiles.NewWorkload(
 		tempfiles.Config{
-			Conninfo: c.postgresConninfo,
-			Jobs:     c.jobs,
-			Rate:     c.tempFilesRate,
+			Conninfo:  c.postgresConninfo,
+			Jobs:      c.jobs,
+			Rate:      c.tempFilesRate,
+			TableSize: c.tempFilesTableSize,
 		}, logger,
 	)
 	if err != nil {

@@ -34,6 +34,7 @@ func main() {
 		deadlocks                       = kingpin.Flag("deadlocks", "Run deadlocks workload").Default("false").Envar("NOISIA_DEADLOCKS").Bool()
 		tempFiles                       = kingpin.Flag("tempfiles", "Run temporary files workload").Default("false").Envar("NOISIA_TEMP_FILES").Bool()
 		tempFilesRate                   = kingpin.Flag("tempfiles.rate", "Number of queries per second (per worker)").Default("1").Envar("NOISIA_TEMP_FILES_RATE").Float64()
+		tempFilesTableSize              = kingpin.Flag("tempfiles.table-size", "Target on-disk size of the per-run dataset table, base-2 (64MB = 64 MiB = 67108864 bytes; lowercase kB rejected). Larger datasets make each ORDER BY random() sort spill more temp bytes, but seeding runs before the query loop and can consume a short --duration budget — set --duration generously.").Default("64MB").Envar("NOISIA_TEMP_FILES_TABLE_SIZE").Bytes()
 		terminate                       = kingpin.Flag("terminate", "Run terminate workload").Default("false").Envar("NOISIA_TERMINATE").Bool()
 		terminateRate                   = kingpin.Flag("terminate.rate", "Number of backends/queries terminate per interval").Default("1").Envar("NOISIA_TERMINATE_RATE").Uint16()
 		terminateInterval               = kingpin.Flag("terminate.interval", "Time interval of single round of termination").Default("1s").Envar("NOISIA_TERMINATE_INTERVAL").Duration()
@@ -111,6 +112,7 @@ func main() {
 		deadlocks:                       *deadlocks,
 		tempFiles:                       *tempFiles,
 		tempFilesRate:                   *tempFilesRate,
+		tempFilesTableSize:              int64(*tempFilesTableSize),
 		terminate:                       *terminate,
 		terminateRate:                   *terminateRate,
 		terminateInterval:               *terminateInterval,
