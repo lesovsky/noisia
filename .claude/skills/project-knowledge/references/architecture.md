@@ -34,7 +34,7 @@ The repo is a Go module (`github.com/lesovsky/noisia`) with one package per work
 ├── targeting/         [helper to pick target tables in the database]
 ├── idlexacts/         [workload: idle transactions]
 ├── rollbacks/         [workload: rollbacks]
-├── waitxacts/         [workload: waiting/locking transactions]
+├── waitxacts/         [workload: one holder cycles an ACCESS EXCLUSIVE lock on ONE table (short-OFF flicker) while a rate-limited manager opens N raw per-waiter db.Connect sessions that block on it (wait_event_type=Lock); --wait-xacts.waiters caps the pile (0=unlimited), --wait-xacts.waiters-rate the accrual → drives max_connections exhaustion (cascade). Dynamic waiter pool drained via a shared sync.WaitGroup before fresh-conn cleanup. Legacy rolling multi-table loop + Config.Jobs removed (ADR-011-1)]
 ├── deadlocks/         [workload: deadlocks]
 ├── tempfiles/         [workload: seeds a wide incompressible dataset table and sorts it (ORDER BY random()) so the sort exceeds the DEFAULT work_mem and spills to on-disk temp files — NO artificial work_mem lowering, so raising work_mem removes the spill (the book chapter-6 remediation demo). Keeps the async pool-per-worker model as the deliberate ADR-009-1 exception to ADR-003-1]
 ├── terminate/         [workload: terminate/cancel backends]
