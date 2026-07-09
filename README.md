@@ -7,7 +7,7 @@
 #### Supported workloads:
 - `idle transactions` - active transactions on hot-write tables that do nothing during their lifetime.
 - `rollbacks` - fake invalid queries that generate errors and increase rollbacks counter.
-- `waiting transactions` - transactions that lock hot-write tables and then idle, leading to other transactions getting stuck
+- `waiting transactions` - one holder cycles an `ACCESS EXCLUSIVE` lock on a single table while a rate-limited manager opens N separate connections (`--wait-xacts.waiters`) that each block on it — a flickering staircase of blocked sessions that, unbounded (`--wait-xacts.waiters=0`), climbs until `max_connections` is exhausted and new clients get `FATAL: sorry, too many clients already`.
 - `deadlocks` - simultaneous transactions where each holds locks that the other transactions want.
 - `temporary files` - queries that sort a seeded dataset larger than `work_mem`, spilling to on-disk temporary files on a default-configured server; raising `work_mem` (per-role/-database) makes the same query run in memory — the spill disappears (the remediation demo).
 - `terminate backends` - terminate random backends (or queries) using `pg_terminate_backend()`, `pg_cancel_backend()`.
@@ -103,6 +103,7 @@ The escalating workloads each have a dedicated demo and tuning guide covering ho
 - [`docs/workloads/wal-flood.md`](docs/workloads/wal-flood.md) — flood WAL with parallel `UPDATE`-churn workers; the honest env-dependent contract, the disk-full conditions, demo parameters, and how it differs from `slot-bloat`.
 - [`docs/workloads/bloat-churn.md`](docs/workloads/bloat-churn.md) — outrun autovacuum by raw rate to grow remediable heap+index bloat; the trio that builds it, the post-stop repair reveal (`VACUUM FULL` / `pg_repack` / `REINDEX CONCURRENTLY`), what to watch via pgstattuple, and how a rate attack differs from `xmin-horizon-holder`'s horizon attack.
 - [`docs/workloads/tempfiles.md`](docs/workloads/tempfiles.md) — spill on-disk temp files by sorting a seeded dataset larger than `work_mem` on a default-configured server; how to watch `temp_files`/`temp_bytes` and `log_temp_files`, and the headline remediation — raise `work_mem` and the spill disappears.
+- [`docs/workloads/waitxacts.md`](docs/workloads/waitxacts.md) — build a pile of blocked waiter sessions behind one held table lock; the observation demo (a flickering staircase of `wait_event_type='Lock'`) and the cascade demo (unbounded waiters until `max_connections` is exhausted), plus the `superuser_reserved_connections` role trick that keeps a `postgres` monitor alive while `app` clients are refused.
 
 #### Contribution
 - PR's are welcome.
