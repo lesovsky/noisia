@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -63,17 +66,18 @@ func Test_sanitize_noDSNInLogs(t *testing.T) {
 }
 
 func TestWorkload_Run_waitersHonored(t *testing.T) {
-	// With Waiters=N, at least N noisia backends must be concurrently blocked on the
-	// locked table (wait_event_type='Lock'). Each waiter owns its own db.Connect, so
-	// the count is independent of the host CPU / pool sizing.
-	const waiters = 3
+	// With Waiters=N, exactly up to N noisia backends block on the locked table
+	// (wait_event_type='Lock'). Each waiter owns its own db.Connect, so the count is
+	// independent of the host CPU / pool sizing. A slow rate=1/s exercises both the
+	// accrual pacing and the hard cap.
+	const waiters = 2
 	config := Config{
 		Conninfo:       db.TestConninfo,
 		Fixture:        true,
 		LocktimeMin:    10 * time.Second,
 		LocktimeMax:    20 * time.Second,
 		Waiters:        waiters,
-		WaitersRate:    20,
+		WaitersRate:    1,
 		ReportInterval: 200 * time.Millisecond,
 	}
 
@@ -90,10 +94,10 @@ func TestWorkload_Run_waitersHonored(t *testing.T) {
 	assert.NoError(t, err)
 	defer func() { _ = obs.Close() }()
 
-	// Poll until at least Waiters noisia backends are blocked on a Lock. The observer
-	// conn does not set application_name, so it is not counted.
+	// Lower bound: poll until at least Waiters noisia backends are blocked on a Lock.
+	// The observer conn does not set application_name, so it is not counted.
 	var n int
-	for i := 0; i < 150; i++ {
+	for i := 0; i < 250; i++ {
 		n = countBlockedNoisiaBackends(t, obs)
 		if n >= waiters {
 			break
@@ -101,6 +105,14 @@ func TestWorkload_Run_waitersHonored(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	assert.GreaterOrEqual(t, n, waiters, "at least Waiters backends must be blocked on the locked table, independent of host CPU")
+
+	// Upper bound (hard cap): the manager must never spawn past Waiters. Were the cap
+	// not enforced, rate=1/s would keep adding waiters every second — sample across a
+	// >1s window to catch any overshoot.
+	for i := 0; i < 60; i++ {
+		assert.LessOrEqual(t, countBlockedNoisiaBackends(t, obs), waiters, "the manager must never exceed the Waiters cap")
+		time.Sleep(20 * time.Millisecond)
+	}
 
 	cancel()
 	assert.NoError(t, <-done)
@@ -143,16 +155,30 @@ func TestWorkload_Run_gracefulRefused(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	w, err := NewWorkload(config, log.NewDefaultLogger("error"))
+	// Capture the reporter lines so we can assert the refused counter actually grows.
+	logger := &captureLogger{}
+	w, err := NewWorkload(config, logger)
 	assert.NoError(t, err)
 
 	done := make(chan error, 1)
 	go func() { done <- w.Run(ctx) }()
 
+	// The (n+1)-th connect is refused by the role's CONNECTION LIMIT: the reporter must
+	// eventually print refused>0. This assertion fails if refused stops being counted.
+	var refused int
+	for i := 0; i < 150; i++ {
+		refused = maxRefused(logger.lines())
+		if refused > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	assert.Greater(t, refused, 0, "refused must increment once the role connection limit is hit")
+
 	// The pile is capped by the role's CONNECTION LIMIT (holder takes one slot), so
 	// with Waiters=0 the established count plateaus instead of growing unbounded — the
-	// (n+1)-th connect is refused, proving the graceful path is exercised. Observe via
-	// the superuser observer, which is not subject to the role's limit.
+	// established waiters are preserved despite the refusals. Observe via the superuser
+	// observer, which is not subject to the role's limit.
 	var n int
 	for i := 0; i < 150; i++ {
 		n = countBlockedNoisiaBackends(t, obs)
@@ -284,4 +310,55 @@ func swapUserPassword(t *testing.T, dsn, user, password string) string {
 	assert.NoError(t, err)
 	u.User = url.UserPassword(user, password)
 	return u.String()
+}
+
+// captureLogger is a log.Logger test double that records every Infof line so a test
+// can assert the reporter panel content (e.g. refused=<n>) without touching real output.
+type captureLogger struct {
+	mu        sync.Mutex
+	infoLines []string
+}
+
+func (l *captureLogger) Info(msg string) {}
+func (l *captureLogger) Infof(format string, v ...interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.infoLines = append(l.infoLines, fmt.Sprintf(format, v...))
+}
+func (l *captureLogger) Warn(msg string)                        {}
+func (l *captureLogger) Warnf(format string, v ...interface{})  {}
+func (l *captureLogger) Error(msg string)                       {}
+func (l *captureLogger) Errorf(format string, v ...interface{}) {}
+
+func (l *captureLogger) lines() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]string, len(l.infoLines))
+	copy(out, l.infoLines)
+	return out
+}
+
+// maxRefused parses the reporter lines for the "refused=<n>" field and returns the
+// largest value seen (the counter is monotonic, so this is its latest reported value).
+func maxRefused(lines []string) int {
+	const key = "refused="
+	max := 0
+	for _, l := range lines {
+		idx := strings.Index(l, key)
+		if idx < 0 {
+			continue
+		}
+		rest := l[idx+len(key):]
+		end := 0
+		for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
+			end++
+		}
+		if end == 0 {
+			continue
+		}
+		if n, err := strconv.Atoi(rest[:end]); err == nil && n > max {
+			max = n
+		}
+	}
+	return max
 }

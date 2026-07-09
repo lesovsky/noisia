@@ -115,7 +115,10 @@ func NewWorkload(config Config, logger log.Logger) (noisia.Workload, error) {
 func (w *workload) Run(ctx context.Context) error {
 	tableIdent, usingFixture, err := w.setup(ctx)
 	if err != nil {
-		return err
+		// setup opens the pool / reads the catalog / creates the fixture — its pgx
+		// errors can carry DSN fragments (host=/user=/…), so never surface them raw:
+		// this error propagates out to cmd/app.go's logger (matches walflood.Run).
+		return fmt.Errorf("waitxacts setup failed: %s", sanitize(err))
 	}
 
 	// Drop the fixture table on exit via a fresh connection (ADR-002-2). Registered
@@ -352,8 +355,14 @@ func (w *workload) runManager(ctx context.Context, wg *sync.WaitGroup, tableIden
 		default:
 		}
 
+		// Enforce a hard cap: the gauge is incremented HERE (a slot reservation),
+		// synchronously in this single manager goroutine, so the next iteration's read
+		// already reflects this spawn — the manager can never overshoot Waiters even at
+		// a high WaitersRate. Only this goroutine ever increments the gauge; waiters
+		// decrement it on exit (so killed waiters free a slot and get refilled).
 		if w.config.Waiters == 0 || established.Load() < int64(w.config.Waiters) {
 			if limiter.Allow() {
+				established.Add(1)
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
@@ -368,14 +377,17 @@ func (w *workload) runManager(ctx context.Context, wg *sync.WaitGroup, tableIden
 	}
 }
 
-// runWaiter opens its OWN dedicated connection and blocks on the locked table. A
-// connect error is the expected too-many-clients observable: it increments refused,
-// is logged rate-limited, keeps the pile, and never crashes the run. A live waiter
-// increments the established gauge and decrements it on exit (killed waiters make the
-// gauge dip so the manager refills them).
+// runWaiter opens its OWN dedicated connection and blocks on the locked table. The
+// manager already reserved this waiter's slot in the established gauge, so runWaiter
+// ALWAYS decrements it exactly once on exit (freeing the slot for a refill), whether
+// the connect succeeds, is refused, or the waiter is later killed. A connect error is
+// the expected too-many-clients observable: it increments refused, is logged
+// rate-limited, keeps the pile, and never crashes the run.
 func (w *workload) runWaiter(ctx context.Context, tableIdent string, established, refused *atomic.Int64, logLimiter *rate.Limiter) {
 	conn, err := db.Connect(ctx, w.config.Conninfo)
 	if err != nil {
+		// Release the reserved slot so the manager can refill within the rate budget.
+		established.Add(-1)
 		if ctx.Err() != nil {
 			return
 		}
@@ -389,7 +401,6 @@ func (w *workload) runWaiter(ctx context.Context, tableIdent string, established
 		return
 	}
 
-	established.Add(1)
 	defer func() {
 		_ = conn.Close()
 		established.Add(-1)
