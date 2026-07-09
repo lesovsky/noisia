@@ -37,6 +37,9 @@ type config struct {
 	waitXactsFixture                bool
 	waitXactsLocktimeMin            time.Duration
 	waitXactsLocktimeMax            time.Duration
+	waitXactsWaiters                uint
+	waitXactsWaitersRate            float64
+	waitXactsReportInterval         time.Duration
 	deadlocks                       bool
 	tempFiles                       bool
 	tempFilesRate                   float64
@@ -331,11 +334,13 @@ func startRollbacksWorkload(ctx context.Context, c config, logger log.Logger) er
 func startWaitxactsWorkload(ctx context.Context, c config, logger log.Logger) error {
 	workload, err := waitxacts.NewWorkload(
 		waitxacts.Config{
-			Conninfo:    c.postgresConninfo,
-			Jobs:        c.jobs,
-			Fixture:     c.waitXactsFixture,
-			LocktimeMin: c.waitXactsLocktimeMin,
-			LocktimeMax: c.waitXactsLocktimeMax,
+			Conninfo:       c.postgresConninfo,
+			Fixture:        c.waitXactsFixture,
+			LocktimeMin:    c.waitXactsLocktimeMin,
+			LocktimeMax:    c.waitXactsLocktimeMax,
+			Waiters:        c.waitXactsWaiters,
+			WaitersRate:    c.waitXactsWaitersRate,
+			ReportInterval: c.waitXactsReportInterval,
 		}, logger,
 	)
 	if err != nil {

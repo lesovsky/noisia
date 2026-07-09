@@ -27,10 +27,13 @@ func main() {
 		idleXactsNaptimeMax             = kingpin.Flag("idle-xacts.naptime-max", "Max transactions naptime").Default("20s").Envar("NOISIA_IDLE_XACTS_NAPTIME_MAX").Duration()
 		rollbacks                       = kingpin.Flag("rollbacks", "Run rollbacks workload").Default("false").Envar("NOISIA_ROLLBACKS").Bool()
 		rollbacksRate                   = kingpin.Flag("rollbacks.rate", "Rollbacks rate per second (per worker)").Default("1").Envar("NOISIA_ROLLBACKS_RATE").Float64()
-		waitXacts                       = kingpin.Flag("wait-xacts", "Run waiting transactions workload").Default("false").Envar("NOISIA_IDLE_XACTS").Bool()
+		waitXacts                       = kingpin.Flag("wait-xacts", "Run waiting transactions workload").Default("false").Envar("NOISIA_WAIT_XACTS").Bool()
 		waitXactsFixture                = kingpin.Flag("wait-xacts.fixture", "Run workload using fixture table").Default("false").Envar("NOISIA_WAIT_XACTS_FIXTURE").Bool()
 		waitXactsLocktimeMin            = kingpin.Flag("wait-xacts.locktime-min", "Min transactions locking time").Default("5s").Envar("NOISIA_WAIT_XACTS_LOCKTIME_MIN").Duration()
 		waitXactsLocktimeMax            = kingpin.Flag("wait-xacts.locktime-max", "Max transactions locking time").Default("20s").Envar("NOISIA_WAIT_XACTS_LOCKTIME_MAX").Duration()
+		waitXactsWaiters                = kingpin.Flag("wait-xacts.waiters", "Cap of blocked waiter connections; 0 = unlimited (not off) — drives the cascade demo toward exhausting max_connections").Default("10").Envar("NOISIA_WAIT_XACTS_WAITERS").Uint()
+		waitXactsWaitersRate            = kingpin.Flag("wait-xacts.waiters-rate", "Waiter connections opened per second").Default("1").Envar("NOISIA_WAIT_XACTS_WAITERS_RATE").Float64()
+		waitXactsReportInterval         = kingpin.Flag("wait-xacts.report-interval", "Self-report line print cadence").Default("1s").Envar("NOISIA_WAIT_XACTS_REPORT_INTERVAL").Duration()
 		deadlocks                       = kingpin.Flag("deadlocks", "Run deadlocks workload").Default("false").Envar("NOISIA_DEADLOCKS").Bool()
 		tempFiles                       = kingpin.Flag("tempfiles", "Run temporary files workload").Default("false").Envar("NOISIA_TEMP_FILES").Bool()
 		tempFilesRate                   = kingpin.Flag("tempfiles.rate", "Number of queries per second (per worker)").Default("1").Envar("NOISIA_TEMP_FILES_RATE").Float64()
@@ -109,6 +112,9 @@ func main() {
 		waitXactsFixture:                *waitXactsFixture,
 		waitXactsLocktimeMin:            *waitXactsLocktimeMin,
 		waitXactsLocktimeMax:            *waitXactsLocktimeMax,
+		waitXactsWaiters:                *waitXactsWaiters,
+		waitXactsWaitersRate:            *waitXactsWaitersRate,
+		waitXactsReportInterval:         *waitXactsReportInterval,
 		deadlocks:                       *deadlocks,
 		tempFiles:                       *tempFiles,
 		tempFilesRate:                   *tempFilesRate,
