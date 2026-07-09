@@ -53,10 +53,12 @@ import (
 
 func main() {
 	config := waitxacts.Config{
-		Conninfo:    "host=127.0.0.1",
-		Jobs:        2,
-		LocktimeMin: 5*time.Second,
-		LocktimeMax: 20*time.Second,
+		Conninfo:       "host=127.0.0.1",
+		Waiters:        10,
+		WaitersRate:    1,
+		ReportInterval: 1*time.Second,
+		LocktimeMin:    5*time.Second,
+		LocktimeMax:    20*time.Second,
 	}
 
 	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}).Level(zerolog.InfoLevel).With().Timestamp().Logger()
