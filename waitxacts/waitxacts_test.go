@@ -2,98 +2,286 @@ package waitxacts
 
 import (
 	"context"
+	"fmt"
+	"net/url"
+	"testing"
+	"time"
+
 	"github.com/lesovsky/noisia/db"
 	"github.com/lesovsky/noisia/log"
 	"github.com/stretchr/testify/assert"
-	"testing"
-	"time"
 )
 
 func TestConfig_validate(t *testing.T) {
+	baseline := Config{
+		LocktimeMin:    5 * time.Second,
+		LocktimeMax:    10 * time.Second,
+		Waiters:        10,
+		WaitersRate:    1,
+		ReportInterval: time.Second,
+	}
+
 	testcases := []struct {
+		name   string
 		valid  bool
 		config Config
 	}{
-		{valid: true, config: Config{Jobs: 1, LocktimeMin: 5 * time.Second, LocktimeMax: 10 * time.Second}},
-		{valid: false, config: Config{Jobs: 0}},
-		{valid: false, config: Config{Jobs: 1, LocktimeMin: 5 * time.Second, LocktimeMax: 4 * time.Second}},
-		{valid: false, config: Config{Jobs: 1, LocktimeMin: 5 * time.Second, LocktimeMax: 0}},
-		{valid: false, config: Config{Jobs: 1, LocktimeMin: 0, LocktimeMax: 5 * time.Second}},
-		{valid: false, config: Config{Jobs: 1, LocktimeMin: 0, LocktimeMax: 0}},
+		{name: "valid baseline", valid: true, config: baseline},
+		{name: "waiters zero is unlimited (valid)", valid: true, config: func() Config { c := baseline; c.Waiters = 0; return c }()},
+		{name: "waiters-rate zero invalid", valid: false, config: func() Config { c := baseline; c.WaitersRate = 0; return c }()},
+		{name: "waiters-rate negative invalid", valid: false, config: func() Config { c := baseline; c.WaitersRate = -1; return c }()},
+		{name: "report-interval zero invalid", valid: false, config: func() Config { c := baseline; c.ReportInterval = 0; return c }()},
+		{name: "report-interval negative invalid", valid: false, config: func() Config { c := baseline; c.ReportInterval = -time.Second; return c }()},
+		{name: "locktime-min greater than max invalid", valid: false, config: func() Config { c := baseline; c.LocktimeMin = 20 * time.Second; return c }()},
+		{name: "locktime-max zero invalid", valid: false, config: func() Config { c := baseline; c.LocktimeMax = 0; return c }()},
+		{name: "locktime-min zero invalid", valid: false, config: func() Config { c := baseline; c.LocktimeMin = 0; return c }()},
+		{name: "both locktimes zero invalid", valid: false, config: func() Config { c := baseline; c.LocktimeMin = 0; c.LocktimeMax = 0; return c }()},
 	}
 
 	for _, tc := range testcases {
-		if tc.valid {
-			assert.NoError(t, tc.config.validate())
-		} else {
-			assert.Error(t, tc.config.validate())
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.valid {
+				assert.NoError(t, tc.config.validate())
+			} else {
+				assert.Error(t, tc.config.validate())
+			}
+		})
 	}
 }
 
-func TestWorkload_Run(t *testing.T) {
+func Test_sanitize_noDSNInLogs(t *testing.T) {
+	// A connect error carrying a URL-form DSN (as pgx produces) must be redacted so
+	// neither the password nor any DSN fragment reaches the log.
+	err := fmt.Errorf("failed to connect to `postgres://appuser:hunter2@db.internal:5432/noisia?sslmode=disable`: too many clients")
+
+	out := sanitize(err)
+	assert.NotContains(t, out, "hunter2")
+	assert.NotContains(t, out, "appuser")
+	assert.NotContains(t, out, "db.internal")
+	assert.NotContains(t, out, "://")
+	assert.Equal(t, "connection error (details suppressed)", out)
+}
+
+func TestWorkload_Run_waitersHonored(t *testing.T) {
+	// With Waiters=N, at least N noisia backends must be concurrently blocked on the
+	// locked table (wait_event_type='Lock'). Each waiter owns its own db.Connect, so
+	// the count is independent of the host CPU / pool sizing.
+	const waiters = 3
 	config := Config{
-		Conninfo:    db.TestConninfo,
-		Fixture:     true,
-		Jobs:        2,
-		LocktimeMin: 100 * time.Millisecond,
-		LocktimeMax: 200 * time.Millisecond,
+		Conninfo:       db.TestConninfo,
+		Fixture:        true,
+		LocktimeMin:    10 * time.Second,
+		LocktimeMax:    20 * time.Second,
+		Waiters:        waiters,
+		WaitersRate:    20,
+		ReportInterval: 200 * time.Millisecond,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	w, err := NewWorkload(config, log.NewDefaultLogger("info"))
+	w, err := NewWorkload(config, log.NewDefaultLogger("error"))
 	assert.NoError(t, err)
-	err = w.Run(ctx)
-	assert.Nil(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
+	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
+
+	// Poll until at least Waiters noisia backends are blocked on a Lock. The observer
+	// conn does not set application_name, so it is not counted.
+	var n int
+	for i := 0; i < 150; i++ {
+		n = countBlockedNoisiaBackends(t, obs)
+		if n >= waiters {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	assert.GreaterOrEqual(t, n, waiters, "at least Waiters backends must be blocked on the locked table, independent of host CPU")
+
+	cancel()
+	assert.NoError(t, <-done)
 }
 
-func Test_startLoop(t *testing.T) {
-	pool, err := db.NewTestDB()
-	assert.NoError(t, err)
-	defer pool.Close()
+func TestWorkload_Run_gracefulRefused(t *testing.T) {
+	// A role with CONNECTION LIMIT n makes the (n+1)-th connect fail with
+	// "too many connections for role" — the expected too-many-clients path. The run
+	// must not crash and the established pile must be preserved.
+	const connLimit = 4
 
-	_, _, err = pool.Exec(context.Background(), "CREATE TABLE noisia_test_1 (a int)")
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
 	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, _, _ = obs.Exec(context.Background(), "DROP ROLE IF EXISTS noisia_wx_limited")
+	_, _, err = obs.Exec(context.Background(),
+		fmt.Sprintf("CREATE ROLE noisia_wx_limited LOGIN PASSWORD 'SENTINEL_SECRET' CONNECTION LIMIT %d", connLimit))
+	assert.NoError(t, err)
+	_, _, _ = obs.Exec(context.Background(), "GRANT CREATE ON SCHEMA public TO noisia_wx_limited")
+	defer func() { _, _, _ = obs.Exec(context.Background(), "DROP ROLE IF EXISTS noisia_wx_limited") }()
+
+	// A superuser bypasses CONNECTION LIMIT, which would make this proof vacuous.
+	assert.False(t, scalarBool(t, obs,
+		"SELECT rolsuper FROM pg_roles WHERE rolname = 'noisia_wx_limited'"),
+		"the limited role must NOT be superuser (else the refusal path is never driven)")
+
+	conninfo := swapUserPassword(t, db.TestConninfo, "noisia_wx_limited", "SENTINEL_SECRET")
+
+	config := Config{
+		Conninfo:       conninfo,
+		Fixture:        true,
+		LocktimeMin:    10 * time.Second,
+		LocktimeMax:    20 * time.Second,
+		Waiters:        0, // unlimited: manager keeps trying to spawn past the connection limit
+		WaitersRate:    50,
+		ReportInterval: 200 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cfg := Config{Jobs: 1, Fixture: true, LocktimeMin: 10 * time.Millisecond, LocktimeMax: 100 * time.Millisecond}
-	assert.NoError(t, startLoop(ctx, log.NewDefaultLogger("info"), pool, []string{"noisia_test_1"}, cfg))
-
-	_, _, err = pool.Exec(context.Background(), "DROP TABLE noisia_test_1")
+	w, err := NewWorkload(config, log.NewDefaultLogger("error"))
 	assert.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+
+	// The pile is capped by the role's CONNECTION LIMIT (holder takes one slot), so
+	// with Waiters=0 the established count plateaus instead of growing unbounded — the
+	// (n+1)-th connect is refused, proving the graceful path is exercised. Observe via
+	// the superuser observer, which is not subject to the role's limit.
+	var n int
+	for i := 0; i < 150; i++ {
+		n = countBlockedNoisiaBackends(t, obs)
+		if n >= connLimit-2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	assert.GreaterOrEqual(t, n, connLimit-2, "the pile must be preserved up to the role connection limit despite refusals")
+
+	cancel()
+	// No crash: refused connects are the expected observable, not a fatal error.
+	assert.NoError(t, <-done)
 }
 
-func Test_lockTable(t *testing.T) {
-	pool, err := db.NewTestDB()
+func TestWorkload_Run_cleanupDrains(t *testing.T) {
+	config := Config{
+		Conninfo:       db.TestConninfo,
+		Fixture:        true,
+		LocktimeMin:    2 * time.Second,
+		LocktimeMax:    4 * time.Second,
+		Waiters:        3,
+		WaitersRate:    20,
+		ReportInterval: 200 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w, err := NewWorkload(config, log.NewDefaultLogger("error"))
 	assert.NoError(t, err)
 
-	_, _, err = pool.Exec(context.Background(), "CREATE TABLE noisia_test_2 (a int)")
-	assert.NoError(t, err)
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
 
-	queryCh := make(chan struct{})
-	go func() {
-		assert.NoError(t, lockTable(context.Background(), pool, "noisia_test_2", 10*time.Millisecond, queryCh))
-	}()
-
-	<-queryCh
-	_, _, err = pool.Exec(context.Background(), "DROP TABLE noisia_test_2")
+	obs, err := db.Connect(context.Background(), db.TestConninfo)
 	assert.NoError(t, err)
+	defer func() { _ = obs.Close() }()
+
+	// Let the pile build up before cancelling.
+	for i := 0; i < 150; i++ {
+		if countBlockedNoisiaBackends(t, obs) >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	cancel()
+	assert.NoError(t, <-done)
+
+	// After a clean drain the fixture table is gone and no noisia session lingers.
+	assert.False(t, tableExists(t, obs, "_noisia_waitxacts_workload"), "fixture table must be dropped after cleanup")
+
+	var lingering int
+	for i := 0; i < 150; i++ {
+		lingering = countNoisiaBackends(t, obs)
+		if lingering == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	assert.Equal(t, 0, lingering, "no noisia sessions may linger after drain")
 }
 
-func Test_selectRandomTable(t *testing.T) {
-	testcases := []struct {
-		tables []string
-		want   int
-	}{
-		{tables: []string{"test.test1", "test.test2", "test.test3"}, want: 10},
-		{tables: []string{}, want: 0},
+// countBlockedNoisiaBackends returns the number of noisia backends parked on a Lock.
+func countBlockedNoisiaBackends(t *testing.T, conn db.Conn) int {
+	t.Helper()
+	rows, err := conn.Query(context.Background(),
+		"SELECT count(*) FROM pg_stat_activity WHERE application_name = 'noisia' AND wait_event_type = 'Lock'")
+	assert.NoError(t, err)
+	defer rows.Close()
+	var n int
+	for rows.Next() {
+		assert.NoError(t, rows.Scan(&n))
 	}
+	assert.NoError(t, rows.Err())
+	return n
+}
 
-	for _, tc := range testcases {
-		assert.Equal(t, tc.want, len(selectRandomTable(tc.tables)))
+// countNoisiaBackends returns the number of backends with application_name='noisia'.
+func countNoisiaBackends(t *testing.T, conn db.Conn) int {
+	t.Helper()
+	rows, err := conn.Query(context.Background(),
+		"SELECT count(*) FROM pg_stat_activity WHERE application_name = 'noisia'")
+	assert.NoError(t, err)
+	defer rows.Close()
+	var n int
+	for rows.Next() {
+		assert.NoError(t, rows.Scan(&n))
 	}
+	assert.NoError(t, rows.Err())
+	return n
+}
+
+// tableExists reports whether a regular table with the given name exists.
+func tableExists(t *testing.T, conn db.Conn, name string) bool {
+	t.Helper()
+	rows, err := conn.Query(context.Background(),
+		"SELECT count(*) FROM pg_class WHERE relname = $1 AND relkind = 'r'", name)
+	assert.NoError(t, err)
+	defer rows.Close()
+	var n int
+	for rows.Next() {
+		assert.NoError(t, rows.Scan(&n))
+	}
+	assert.NoError(t, rows.Err())
+	return n > 0
+}
+
+// scalarBool reads a single boolean scalar from the given query.
+func scalarBool(t *testing.T, conn db.Conn, query string) bool {
+	t.Helper()
+	rows, err := conn.Query(context.Background(), query)
+	assert.NoError(t, err)
+	defer rows.Close()
+	var b bool
+	for rows.Next() {
+		assert.NoError(t, rows.Scan(&b))
+	}
+	assert.NoError(t, rows.Err())
+	return b
+}
+
+// swapUserPassword rewrites a URL-form DSN, replacing the userinfo so a test can
+// reconnect to the same host/port/db as a different role.
+func swapUserPassword(t *testing.T, dsn, user, password string) string {
+	t.Helper()
+	u, err := url.Parse(dsn)
+	assert.NoError(t, err)
+	u.User = url.UserPassword(user, password)
+	return u.String()
 }
